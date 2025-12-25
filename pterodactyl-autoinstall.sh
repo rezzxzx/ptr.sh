@@ -1,350 +1,231 @@
 #!/bin/bash
 
 # ============================================
-# Pterodactyl Auto-Installer untuk Ubuntu
-# Konfigurasi Otomatis: ryezx@gmail.com / ryezx / ryezx
+# PTERODACTYL INSTALLER SCRIPT
+# Versi: 2.0.0
+# Dukungan: Ubuntu 20.04/22.04, Debian 11/12
 # ============================================
 
-# Warna untuk output
+# Clear screen
+clear
+
+# Warna untuk UI
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
 NC='\033[0m' # No Color
 
-# Variabel konfigurasi OTOMATIS
+# Variabel global
 PANEL_URL="https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz"
 WINGS_URL="https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64"
-BACKUP_DIR="/var/lib/pterodactyl/backups"
-LOG_FILE="/var/log/pterodactyl-autoinstall.log"
-
-# KONFIGURASI OTOMATIS - SESUAI PERMINTAAN
-AUTO_EMAIL="ryezx@gmail.com"
-AUTO_USERNAME="ryezx"
-AUTO_PASSWORD="ryezx"
-AUTO_ADMIN_NAME="Ryezx Administrator"
-AUTO_TIMEZONE="Asia/Jakarta"
-
-# Fungsi untuk logging
-log() {
-    echo -e "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
-}
+MYSQL_ROOT_PASS=$(openssl rand -base64 32)
+PANEL_URL_SETUP="http://$(curl -4 -s ifconfig.co)"
 
 # Fungsi untuk menampilkan header
 show_header() {
     clear
-    echo -e "${BLUE}"
-    echo "================================================"
-    echo "   Pterodactyl Auto-Installer"
-    echo "   User: ryezx / Pass: ryezx"
-    echo "================================================"
+    echo -e "${PURPLE}"
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║    ██████╗ ████████╗███████║██████╗  ██████╗ █████╗  ██████╗ ║"
+    echo "║    ██╔══██╗╚══██╔══╝██╔════╝██╔══██╗██╔═══██╗██╔══██╗██╔══██╗║"
+    echo "║    ██████╔╝   ██║   █████║  ██║  ██║██║   ██║███████║██████╔╝║"
+    echo "║    ██╔═══╝    ██║   ██╔══║  ██║  ██║██║   ██║██╔══██║██╔══██╗║"
+    echo "║    ██║        ██║   ███████║██████╔╝╚██████╔╝██║  ██║██║  ██║║"
+    echo "║    ╚═╝        ╚═╝   ╚══════╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝║"
+    echo "║                   INSTALLER SCRIPT v2.0.0                     ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
+}
+
+# Fungsi untuk progress bar
+progress_bar() {
+    local duration=${1}
+    local increment=$((100/$duration))
+    local elapsed=0
+    local bar=""
+    
+    while [ $elapsed -le $duration ]; do
+        printf -v prog "%0.s#" $(seq 1 $((elapsed*50/duration)))
+        printf -v space "%0.s " $(seq 1 $((50-(elapsed*50/duration))))
+        printf "[${GREEN}%s${space}${NC}] %3d%%" "$prog" $((elapsed*100/duration))
+        sleep 1
+        elapsed=$((elapsed + 1))
+        printf "\r"
+    done
+    echo "[${GREEN}##################################################${NC}] 100%"
 }
 
 # Fungsi untuk cek root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}Error: Script harus dijalankan sebagai root!${NC}"
-        echo -e "Gunakan: ${GREEN}sudo bash $0${NC}"
+        echo -e "${RED}Error: Script ini harus dijalankan sebagai root!${NC}"
+        echo -e "${YELLOW}Gunakan: sudo bash install.sh${NC}"
         exit 1
     fi
 }
 
-# Fungsi untuk cek Ubuntu version
-check_ubuntu_version() {
+# Fungsi untuk cek OS
+check_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
-        UBUNTU_VERSION=$VERSION_ID
-        
-        case $UBUNTU_VERSION in
-            "20.04"|"22.04"|"24.04")
-                log "Ubuntu $UBUNTU_VERSION terdeteksi - OK"
-                ;;
-            *)
-                echo -e "${RED}Error: Ubuntu version $UBUNTU_VERSION tidak didukung!${NC}"
-                echo -e "Hanya Ubuntu 20.04, 22.04, dan 24.04 yang didukung."
-                exit 1
-                ;;
-        esac
+        OS=$ID
+        VER=$VERSION_ID
     else
-        echo -e "${RED}Error: Sistem operasi bukan Ubuntu!${NC}"
+        echo -e "${RED}Tidak dapat mendeteksi OS!${NC}"
+        exit 1
+    fi
+    
+    echo -e "${CYAN}✓ Sistem Operasi: $OS $VER${NC}"
+    
+    if [[ "$OS" != "ubuntu" && "$OS" != "debian" ]]; then
+        echo -e "${RED}Error: OS ini tidak didukung!${NC}"
+        echo -e "${YELLOW}Hanya Ubuntu 20.04/22.04 dan Debian 11/12 yang didukung${NC}"
         exit 1
     fi
 }
 
-# Fungsi untuk update sistem
+# Fungsi untuk update system
 update_system() {
-    log "Memperbarui sistem..."
-    apt-get update -y >> "$LOG_FILE" 2>&1
-    apt-get upgrade -y >> "$LOG_FILE" 2>&1
-    apt-get autoremove -y >> "$LOG_FILE" 2>&1
+    echo -e "\n${BLUE}[1/10]${NC} Memperbarui sistem..."
+    progress_bar 3
     
-    # Install dependensi dasar
-    apt-get install -y curl wget git nano htop ufw software-properties-common \
-        apt-transport-https ca-certificates gnupg lsb-release >> "$LOG_FILE" 2>&1
+    apt-get update > /dev/null 2>&1
+    apt-get -y upgrade > /dev/null 2>&1
+    apt-get -y autoremove > /dev/null 2>&1
     
-    log "Sistem berhasil diperbarui"
+    echo -e "${GREEN}✓ Sistem telah diperbarui${NC}"
 }
 
-# Fungsi install dependencies
+# Fungsi untuk install dependencies
 install_dependencies() {
-    log "Menginstal dependencies..."
+    echo -e "\n${BLUE}[2/10]${NC} Menginstal dependencies..."
+    progress_bar 5
     
-    # PHP repository untuk Ubuntu 20.04
-    if [[ $UBUNTU_VERSION == "20.04" ]]; then
-        add-apt-repository -y ppa:ondrej/php >> "$LOG_FILE" 2>&1
-    fi
+    apt-get -y install software-properties-common curl apt-transport-https ca-certificates gnupg > /dev/null 2>&1
     
-    apt-get update -y >> "$LOG_FILE" 2>&1
+    # PHP repositori
+    LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php > /dev/null 2>&1
     
-    # Install PHP dan ekstensi berdasarkan versi Ubuntu
-    if [[ $UBUNTU_VERSION == "24.04" ]]; then
-        apt-get install -y php8.3 php8.3-{cli,common,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip} \
-            mariadb-server nginx tar unzip git redis-server >> "$LOG_FILE" 2>&1
-        PHP_VERSION="8.3"
-        PHP_SERVICE="php8.3-fpm"
-    elif [[ $UBUNTU_VERSION == "22.04" ]]; then
-        apt-get install -y php8.1 php8.1-{cli,common,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip} \
-            mariadb-server nginx tar unzip git redis-server >> "$LOG_FILE" 2>&1
-        PHP_VERSION="8.1"
-        PHP_SERVICE="php8.1-fpm"
-    else
-        apt-get install -y php8.1 php8.1-{cli,common,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip} \
-            mariadb-server nginx tar unzip git redis-server >> "$LOG_FILE" 2>&1
-        PHP_VERSION="8.1"
-        PHP_SERVICE="php8.1-fpm"
-    fi
+    # MariaDB repositori
+    curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | bash > /dev/null 2>&1
     
-    # Install Composer
-    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer >> "$LOG_FILE" 2>&1
+    apt-get update > /dev/null 2>&1
     
-    log "Dependencies berhasil diinstal"
+    # Install dependencies panel
+    apt-get -y install php8.1 php8.1-{cli,gd,mysql,pdo,mbstring,tokenizer,bcmath,xml,fpm,curl,zip} \
+        mariadb-server nginx tar unzip git redis-server \
+        cron composer > /dev/null 2>&1
+    
+    echo -e "${GREEN}✓ Dependencies berhasil diinstal${NC}"
 }
 
-# Fungsi konfigurasi database
+# Fungsi untuk konfigurasi database
 configure_database() {
-    log "Mengkonfigurasi database..."
+    echo -e "\n${BLUE}[3/10]${NC} Mengkonfigurasi database..."
+    progress_bar 4
     
-    # Start dan enable MySQL
-    systemctl start mariadb >> "$LOG_FILE" 2>&1
-    systemctl enable mariadb >> "$LOG_FILE" 2>&1
-    
-    # Buat database dan user
-    MYSQL_ROOT_PASSWORD=$(openssl rand -base64 32)
-    PANEL_DB_PASSWORD=$(openssl rand -base64 32)
-    
-    # Secure installation
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD';" >> "$LOG_FILE" 2>&1
-    
-    # Buat file konfigurasi MySQL
-    cat > /root/.my.cnf << EOF
-[client]
-user=root
-password=$MYSQL_ROOT_PASSWORD
-EOF
-    
-    chmod 600 /root/.my.cnf
+    # Secure MySQL installation
+    mysql -e "DELETE FROM mysql.user WHERE User='';"
+    mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+    mysql -e "DROP DATABASE IF EXISTS test;"
+    mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+    mysql -e "FLUSH PRIVILEGES;"
     
     # Buat database untuk panel
-    mysql -e "CREATE DATABASE panel;" >> "$LOG_FILE" 2>&1
-    mysql -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '$PANEL_DB_PASSWORD';" >> "$LOG_FILE" 2>&1
-    mysql -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1' WITH GRANT OPTION;" >> "$LOG_FILE" 2>&1
-    mysql -e "FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+    mysql -e "CREATE DATABASE panel;"
+    mysql -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}';"
+    mysql -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1' WITH GRANT OPTION;"
+    mysql -e "FLUSH PRIVILEGES;"
     
-    # Simpan password
-    cat > /root/pterodactyl_db_info.txt << EOF
-=== INFORMASI DATABASE PTERODACTYL ===
-Tanggal: $(date)
-Server: $(hostname)
-
-MySQL Root Password: $MYSQL_ROOT_PASSWORD
-Panel Database Password: $PANEL_DB_PASSWORD
-Database Name: panel
-Database User: pterodactyl
-Database Host: 127.0.0.1
-
-=== KONFIGURASI ADMIN ===
-Email: $AUTO_EMAIL
-Username: $AUTO_USERNAME
-Password: $AUTO_PASSWORD
-====================================
-EOF
-    
-    log "Database berhasil dikonfigurasi"
-    echo -e "${GREEN}Password database disimpan di /root/pterodactyl_db_info.txt${NC}"
+    echo -e "${GREEN}✓ Database berhasil dikonfigurasi${NC}"
 }
 
-# Fungsi untuk meminta FQDN
-get_fqdn() {
-    echo -e "${YELLOW}╔════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║   MASUKKAN DOMAIN/FQDN UNTUK PANEL     ║${NC}"
-    echo -e "${YELLOW}╚════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "Contoh: ${GREEN}panel.domain-anda.com${NC}"
-    echo -e "Atau gunakan IP: ${GREEN}http://$(curl -s ifconfig.me)${NC}"
-    echo ""
-    
-    while true; do
-        read -p "Masukkan FQDN atau IP untuk panel: " FQDN
-        
-        if [[ -n "$FQDN" ]]; then
-            # Cek jika user memasukkan http:// atau https://
-            if [[ "$FQDN" == http://* ]] || [[ "$FQDN" == https://* ]]; then
-                echo -e "${RED}Hanya masukkan domain/IP tanpa http://${NC}"
-                continue
-            fi
-            
-            # Konfirmasi
-            echo ""
-            echo -e "Domain/IP yang dimasukkan: ${GREEN}$FQDN${NC}"
-            read -p "Apakah ini benar? (y/n): " confirm
-            
-            if [[ $confirm =~ ^[Yy]$ ]]; then
-                break
-            fi
-        else
-            echo -e "${RED}FQDN tidak boleh kosong!${NC}"
-        fi
-    done
-    
-    # Simpan FQDN ke variabel global
-    PANEL_FQDN="$FQDN"
-    log "FQDN yang dipilih: $PANEL_FQDN"
-}
-
-# Fungsi install Pterodactyl Panel
+# Fungsi untuk install panel
 install_panel() {
-    log "Menginstal Pterodactyl Panel..."
+    echo -e "\n${BLUE}[4/10]${NC} Mengunduh panel..."
+    progress_bar 3
     
-    # Minta FQDN
-    get_fqdn
-    
-    # Buat directory
     mkdir -p /var/www/pterodactyl
     cd /var/www/pterodactyl
     
-    log "Mendownload panel dari: $PANEL_URL"
-    curl -L $PANEL_URL | tar --strip-components=1 -xzv >> "$LOG_FILE" 2>&1
-    
-    # Set permissions
+    curl -L $PANEL_URL | tar -xz > /dev/null 2>&1
     chmod -R 755 storage/* bootstrap/cache/
-    chown -R www-data:www-data /var/www/pterodactyl/*
     
-    # Install dependencies Composer
-    log "Menginstal dependencies Composer..."
-    composer install --no-dev --optimize-autoloader >> "$LOG_FILE" 2>&1
+    echo -e "\n${BLUE}[5/10]${NC} Menginstal dependencies composer..."
+    progress_bar 8
     
-    # Copy environment file
+    composer install --no-dev --optimize-autoloader > /dev/null 2>&1
+    
+    echo -e "\n${BLUE}[6/10]${NC} Mengkonfigurasi environment..."
+    progress_bar 3
+    
     cp .env.example .env
+    php artisan key:generate --force > /dev/null 2>&1
     
-    # Generate key
-    php artisan key:generate --force >> "$LOG_FILE" 2>&1
+    # Update .env file
+    sed -i "s/DB_PASSWORD=/DB_PASSWORD=${MYSQL_ROOT_PASS}/g" .env
+    sed -i "s/APP_URL=http:\/\/localhost/APP_URL=${PANEL_URL_SETUP}/g" .env
     
-    # Setup environment dengan konfigurasi OTOMATIS
-    log "Mengkonfigurasi environment panel..."
+    echo -e "\n${BLUE}[7/10]${NC} Migrasi database..."
+    progress_bar 5
+    
     php artisan p:environment:setup \
-        --author="$AUTO_EMAIL" \
-        --url="http://$PANEL_FQDN" \
-        --timezone="$AUTO_TIMEZONE" \
+        --author=admin@localhost \
+        --url=$PANEL_URL_SETUP \
+        --timezone=Asia/Jakarta \
         --cache=redis \
         --session=redis \
         --queue=redis \
-        --redis-host=127.0.0.1 \
+        --redis-host=localhost \
+        --redis-pass=null \
         --redis-port=6379 \
-        --settings-ui=true >> "$LOG_FILE" 2>&1
+        --settings-ui=true > /dev/null 2>&1
     
-    # Setup database
     php artisan p:environment:database \
         --host=127.0.0.1 \
         --port=3306 \
         --database=panel \
         --username=pterodactyl \
-        --password=$PANEL_DB_PASSWORD >> "$LOG_FILE" 2>&1
+        --password=${MYSQL_ROOT_PASS} > /dev/null 2>&1
     
-    # Migrasi database
-    log "Menjalankan migrasi database..."
-    php artisan migrate --seed --force >> "$LOG_FILE" 2>&1
+    php artisan migrate --seed --force > /dev/null 2>&1
     
-    # Buat user admin OTOMATIS dengan konfigurasi yang diminta
-    log "Membuat user admin otomatis..."
+    echo -e "\n${BLUE}[8/10]${NC} Membuat user admin..."
+    progress_bar 2
+    
     php artisan p:user:make \
-        --email="$AUTO_EMAIL" \
-        --username="$AUTO_USERNAME" \
-        --name="$AUTO_ADMIN_NAME" \
-        --admin=1 \
-        --password="$AUTO_PASSWORD" >> "$LOG_FILE" 2>&1
+        --email=admin@localhost \
+        --username=admin \
+        --name=Admin \
+        --password=admin123 \
+        --admin=1 > /dev/null 2>&1
     
-    # Simpan credentials admin
-    cat > /root/pterodactyl_admin_credentials.txt << EOF
-=== CREDENTIALS ADMIN PTERODACTYL ===
-Tanggal: $(date)
-Server: $(hostname)
-Panel URL: http://$PANEL_FQDN
-
-=== LOGIN DETAILS ===
-Email: $AUTO_EMAIL
-Username: $AUTO_USERNAME
-Password: $AUTO_PASSWORD
-
-=== DATABASE INFO ===
-MySQL Root: $MYSQL_ROOT_PASSWORD
-Panel DB Pass: $PANEL_DB_PASSWORD
-
-=== CATATAN ===
-1. Ganti password setelah login pertama
-2. Setup SSL untuk keamanan
-3. Backup credentials ini
-===============================
-EOF
+    echo -e "\n${BLUE}[9/10]${NC} Mengkonfigurasi nginx..."
+    progress_bar 3
     
-    log "Panel berhasil diinstal"
-    echo -e "${GREEN}Credentials admin disimpan di /root/pterodactyl_admin_credentials.txt${NC}"
-}
-
-# Fungsi konfigurasi Nginx
-configure_nginx() {
-    log "Mengkonfigurasi Nginx..."
-    
-    # Hentikan Nginx
-    systemctl stop nginx
-    
-    # Backup konfigurasi default
-    mv /etc/nginx/sites-available/default /etc/nginx/sites-available/default.bak
-    
-    # Buat konfigurasi untuk Pterodactyl
-    cat > /etc/nginx/sites-available/pterodactyl.conf << EOF
+    cat > /etc/nginx/sites-available/pterodactyl.conf << 'EOF'
 server {
     listen 80;
-    listen [::]:80;
-    server_name $PANEL_FQDN;
+    server_name _;
     root /var/www/pterodactyl/public;
     
     index index.html index.htm index.php;
     charset utf-8;
     
     location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files $uri $uri/ /index.php?$query_string;
     }
     
-    location = /favicon.ico { access_log off; log_not_found off; }
-    location = /robots.txt  { access_log off; log_not_found off; }
-    
-    access_log /var/log/nginx/pterodactyl.app-access.log;
-    error_log  /var/log/nginx/pterodactyl.app-error.log error;
-    
-    # allow larger file uploads and longer script runtimes
-    client_max_body_size 100m;
-    client_body_timeout 120s;
-    
-    sendfile off;
-    
     location ~ \.php$ {
-        fastcgi_split_path_info ^(.+\.php)(/.+)$;
-        fastcgi_pass unix:/run/php/$PHP_SERVICE.sock;
+        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock;
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size = 100M";
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param HTTP_PROXY "";
         fastcgi_intercept_errors off;
         fastcgi_buffer_size 16k;
@@ -352,7 +233,6 @@ server {
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
-        include /etc/nginx/fastcgi_params;
     }
     
     location ~ /\.ht {
@@ -361,71 +241,71 @@ server {
 }
 EOF
     
-    # Aktifkan konfigurasi
     ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/
     rm -f /etc/nginx/sites-enabled/default
+    systemctl restart nginx > /dev/null 2>&1
     
-    # Test konfigurasi
-    if nginx -t >> "$LOG_FILE" 2>&1; then
-        log "Konfigurasi Nginx valid"
-    else
-        echo -e "${RED}Error: Konfigurasi Nginx tidak valid!${NC}"
-        exit 1
-    fi
+    echo -e "\n${BLUE}[10/10]${NC} Mengkonfigurasi cron jobs..."
+    progress_bar 2
     
-    # Start Nginx
-    systemctl start nginx
-    systemctl enable nginx
-    systemctl restart $PHP_SERVICE
+    (crontab -l 2>/dev/null; echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1") | crontab -
     
-    log "Nginx berhasil dikonfigurasi untuk $PANEL_FQDN"
+    # Set permissions
+    chown -R www-data:www-data /var/www/pterodactyl/*
+    
+    echo -e "\n${GREEN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ PANEL PTERODACTYL BERHASIL DIINSTAL!${NC}"
+    echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}URL Panel:${NC} ${PANEL_URL_SETUP}"
+    echo -e "${YELLOW}Email:${NC} admin@localhost"
+    echo -e "${YELLOW}Password:${NC} admin123"
+    echo -e "${YELLOW}MySQL Password:${NC} ${MYSQL_ROOT_PASS}"
+    echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}Jangan lupa ganti password default setelah login pertama!${NC}"
 }
 
-# Fungsi install Wings
+# Fungsi untuk install wings
 install_wings() {
-    log "Menginstal Wings..."
+    echo -e "\n${BLUE}[1/8]${NC} Menginstal dependencies Wings..."
+    progress_bar 4
     
-    # Install Docker
-    log "Menginstal Docker..."
-    curl -fsSL https://get.docker.com | sh >> "$LOG_FILE" 2>&1
+    apt-get update > /dev/null 2>&1
+    apt-get -y install docker.io docker-compose > /dev/null 2>&1
+    systemctl enable docker > /dev/null 2>&1
+    systemctl start docker > /dev/null 2>&1
     
-    # Install dependencies untuk Wings
-    apt-get install -y docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    echo -e "\n${BLUE}[2/8]${NC} Mengunduh Wings..."
+    progress_bar 3
     
-    # Download dan install Wings
     mkdir -p /etc/pterodactyl
-    curl -L -o /usr/local/bin/wings $WINGS_URL >> "$LOG_FILE" 2>&1
+    curl -L -o /usr/local/bin/wings $WINGS_URL > /dev/null 2>&1
     chmod +x /usr/local/bin/wings
     
-    # Generate Wings configuration
-    cat > /etc/pterodactyl/config.yml << EOF
+    echo -e "\n${BLUE}[3/8]${NC} Membuat konfigurasi Wings..."
+    progress_bar 3
+    
+    cat > /etc/pterodactyl/config.yml << 'EOF'
 debug: false
+uuid: auto
+token: YOUR_PANEL_TOKEN_HERE
+api:
+  host: 0.0.0.0
+  port: 8080
+  ssl:
+    enabled: false
+  upload_limit: 100
 system:
-  data: /var/lib/pterodactyl/containers
+  data: /var/lib/pterodactyl/volumes
   sftp:
-    bind_port: 2022
-  username: pterodactyl
-  timezone: $AUTO_TIMEZONE
-docker:
-  network:
-    name: pterodactyl_nw
-    interface: 172.18.0.1
-  containers:
-    image: ghcr.io/pterodactyl/yolks:latest
-    stop_timeout: 10s
-  networks: []
-allow_cors: false
-upload_limit: 100
-redis: {}
+    port: 2022
+allowed_mounts: []
+remote: http://your-panel-url.com
 EOF
     
-    # Buat user pterodactyl
-    useradd -r -d /var/lib/pterodactyl -s /bin/false pterodactyl
-    mkdir -p /var/lib/pterodactyl
-    chown -R pterodactyl:pterodactyl /var/lib/pterodactyl
+    echo -e "\n${BLUE}[4/8]${NC} Membuat service Wings..."
+    progress_bar 2
     
-    # Buat systemd service untuk Wings
-    cat > /etc/systemd/system/wings.service << EOF
+    cat > /etc/systemd/system/wings.service << 'EOF'
 [Unit]
 Description=Pterodactyl Wings Daemon
 After=docker.service
@@ -433,7 +313,7 @@ Requires=docker.service
 PartOf=docker.service
 
 [Service]
-User=pterodactyl
+User=root
 WorkingDirectory=/etc/pterodactyl
 LimitNOFILE=4096
 PIDFile=/var/run/wings/pid
@@ -447,301 +327,214 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
     
-    # Reload systemd dan enable service
-    systemctl daemon-reload
-    systemctl enable --now wings >> "$LOG_FILE" 2>&1
+    echo -e "\n${BLUE}[5/8]${NC} Membuat direktori data..."
+    progress_bar 2
     
-    # Buat API key untuk Wings (akan digenerate di panel)
-    log "Wings berhasil diinstal"
-    echo -e "${YELLOW}Catatan: Anda perlu membuat API key di panel untuk menghubungkan Wings${NC}"
-}
-
-# Fungsi konfigurasi firewall
-configure_firewall() {
-    log "Mengkonfigurasi firewall..."
+    mkdir -p /var/lib/pterodactyl/volumes
+    mkdir -p /var/log/pterodactyl
     
-    # Reset firewall
-    ufw --force reset >> "$LOG_FILE" 2>&1
+    echo -e "\n${BLUE}[6/8]${NC} Reload systemd..."
+    progress_bar 2
     
-    # Default policies
-    ufw default deny incoming
-    ufw default allow outgoing
+    systemctl daemon-reload > /dev/null 2>&1
     
-    # Allow SSH
-    ufw allow 22/tcp comment 'SSH'
+    echo -e "\n${BLUE}[7/8]${NC} Mengaktifkan Wings..."
+    progress_bar 2
     
-    # Allow HTTP/HTTPS untuk Panel
-    ufw allow 80/tcp comment 'HTTP Panel'
-    ufw allow 443/tcp comment 'HTTPS Panel'
+    systemctl enable wings > /dev/null 2>&1
     
-    # Allow ports untuk Wings
-    ufw allow 2022/tcp comment 'Wings SFTP'
-    ufw allow 8080/tcp comment 'Wings API'
+    echo -e "\n${BLUE}[8/8]${NC} Konfigurasi firewall..."
+    progress_bar 3
     
-    # Allow beberapa port game umum
-    ufw allow 25565/tcp comment 'Minecraft'
-    ufw allow 25565/udp comment 'Minecraft UDP'
-    ufw allow 27015/tcp comment 'CS:GO'
-    ufw allow 27015/udp comment 'CS:GO UDP'
-    ufw allow 7777/tcp comment 'Ark'
-    ufw allow 7777/udp comment 'Ark UDP'
-    
-    # Enable UFW
-    echo "y" | ufw enable >> "$LOG_FILE" 2>&1
-    
-    # Tampilkan status
-    ufw status numbered
-    
-    log "Firewall berhasil dikonfigurasi"
-}
-
-# Fungsi setup cron jobs
-setup_cron() {
-    log "Menyetup cron jobs..."
-    
-    # Buat cron job untuk panel
-    crontab -l > mycron 2>/dev/null || true
-    echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1" >> mycron
-    crontab mycron
-    rm mycron
-    
-    # Buat cron job untuk backup otomatis
-    mkdir -p /etc/cron.daily
-    cat > /etc/cron.daily/pterodactyl-backup << 'EOF'
-#!/bin/bash
-BACKUP_DIR="/var/lib/pterodactyl/backups"
-DATE=$(date +%Y%m%d_%H%M%S)
-
-mkdir -p $BACKUP_DIR
-
-# Backup database
-mysqldump panel > $BACKUP_DIR/panel_db_$DATE.sql 2>/dev/null
-
-# Backup files panel
-tar -czf $BACKUP_DIR/panel_files_$DATE.tar.gz /var/www/pterodactyl 2>/dev/null
-
-# Backup configuration
-cp /etc/pterodactyl/config.yml $BACKUP_DIR/wings_config_$DATE.yml 2>/dev/null
-
-# Hapus backup lebih dari 7 hari
-find $BACKUP_DIR -type f -mtime +7 -delete
-
-echo "Backup completed on $DATE" >> /var/log/pterodactyl-backup.log
-EOF
-    
-    chmod +x /etc/cron.daily/pterodactyl-backup
-    
-    log "Cron jobs berhasil disetup"
-}
-
-# Fungsi install SSL dengan Let's Encrypt
-install_ssl() {
-    echo -e "${YELLOW}╔════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║   INSTALL SSL LET'S ENCRYPT            ║${NC}"
-    echo -e "${YELLOW}╚════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    read -p "Apakah Anda ingin menginstal SSL Let's Encrypt? (y/n): " INSTALL_SSL
-    
-    if [[ $INSTALL_SSL =~ ^[Yy]$ ]]; then
-        log "Menginstal SSL Let's Encrypt..."
-        
-        # Install certbot
-        apt-get install -y certbot python3-certbot-nginx >> "$LOG_FILE" 2>&1
-        
-        echo ""
-        echo -e "Domain panel Anda: ${GREEN}$PANEL_FQDN${NC}"
-        read -p "Masukkan email untuk sertifikat SSL (default: $AUTO_EMAIL): " SSL_EMAIL
-        SSL_EMAIL=${SSL_EMAIL:-$AUTO_EMAIL}
-        
-        # Dapatkan sertifikat SSL
-        if certbot --nginx -d $PANEL_FQDN --non-interactive --agree-tos --email $SSL_EMAIL >> "$LOG_FILE" 2>&1; then
-            log "SSL berhasil diinstal untuk $PANEL_FQDN"
-            
-            # Update panel URL di database untuk HTTPS
-            cd /var/www/pterodactyl
-            php artisan p:environment:setup --url=https://$PANEL_FQDN --force >> "$LOG_FILE" 2>&1
-            
-            # Setup auto-renewal
-            echo "0 3 * * * /usr/bin/certbot renew --quiet" | crontab -
-            
-            echo -e "${GREEN}SSL berhasil diinstal!${NC}"
-            echo -e "Panel sekarang dapat diakses via: ${YELLOW}https://$PANEL_FQDN${NC}"
-        else
-            echo -e "${RED}Gagal menginstal SSL. Pastikan DNS sudah mengarah ke server ini.${NC}"
-            echo -e "Anda tetap dapat mengakses panel via: ${YELLOW}http://$PANEL_FQDN${NC}"
-        fi
-    else
-        log "Melewati instalasi SSL"
-        echo -e "Panel dapat diakses via: ${YELLOW}http://$PANEL_FQDN${NC}"
+    # Setup firewall jika ufw ada
+    if command -v ufw &> /dev/null; then
+        ufw allow 22/tcp > /dev/null 2>&1
+        ufw allow 80/tcp > /dev/null 2>&1
+        ufw allow 443/tcp > /dev/null 2>&1
+        ufw allow 8080/tcp > /dev/null 2>&1
+        ufw allow 2022/tcp > /dev/null 2>&1
+        ufw --force enable > /dev/null 2>&1
     fi
+    
+    echo -e "\n${GREEN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ WINGS BERHASIL DIINSTAL!${NC}"
+    echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}Langkah selanjutnya:${NC}"
+    echo -e "1. Buka panel Pterodactyl di ${PANEL_URL_SETUP}"
+    echo -e "2. Buat location dan node di Admin → Locations & Nodes"
+    echo -e "3. Generate configuration untuk node"
+    echo -e "4. Copy token dan update di /etc/pterodactyl/config.yml"
+    echo -e "5. Jalankan: ${CYAN}systemctl start wings${NC}"
+    echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
 }
 
-# Fungsi untuk menampilkan informasi setelah instalasi
-show_post_install_info() {
-    show_header
+# Fungsi untuk menghapus semua
+uninstall_all() {
+    echo -e "\n${RED}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${RED}PERINGATAN: Ini akan menghapus SEMUA konfigurasi!${NC}"
+    echo -e "${RED}══════════════════════════════════════════════════════════════${NC}"
     
-    echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║          INSTALASI BERHASIL SELESAI!            ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${BLUE}=== INFORMASI LOGIN ===${NC}"
-    echo -e "Panel URL:  ${YELLOW}http://$PANEL_FQDN${NC}"
-    echo -e "Email:      ${GREEN}$AUTO_EMAIL${NC}"
-    echo -e "Username:   ${GREEN}$AUTO_USERNAME${NC}"
-    echo -e "Password:   ${GREEN}$AUTO_PASSWORD${NC}"
-    echo ""
-    echo -e "${BLUE}=== FILE INFORMASI ===${NC}"
-    echo -e "Credentials:  ${YELLOW}/root/pterodactyl_admin_credentials.txt${NC}"
-    echo -e "Database Info: ${YELLOW}/root/pterodactyl_db_info.txt${NC}"
-    echo -e "Log Installer: ${YELLOW}$LOG_FILE${NC}"
-    echo ""
-    echo -e "${BLUE}=== LANGKAH SELANJUTNYA ===${NC}"
-    echo "1. Login ke panel dengan credentials di atas"
-    echo "2. Ganti password setelah login pertama"
-    echo "3. Buat API key di Admin -> Configuration"
-    echo "4. Setup node dan location"
-    echo "5. Setup Wings dengan API key yang dibuat"
-    echo ""
-    echo -e "${RED}=== PERINGATAN ===${NC}"
-    echo "1. Simpan credentials dengan aman!"
-    echo "2. Setup backup rutin"
-    echo "3. Monitor log di /var/log/pterodactyl/"
-    echo ""
-    echo -e "${BLUE}=== STATUS SERVICES ===${NC}"
-    systemctl status nginx --no-pager
-    echo ""
-    systemctl status mariadb --no-pager
-    echo ""
-    systemctl status wings --no-pager 2>/dev/null || echo "Wings tidak diinstal"
-    echo ""
+    read -p "Apakah Anda yakin? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Uninstall dibatalkan.${NC}"
+        return
+    fi
     
-    # Tampilkan IP server
-    SERVER_IP=$(curl -s ifconfig.me)
-    echo -e "Server IP: ${GREEN}$SERVER_IP${NC}"
-    echo -e "Port yang terbuka: ${YELLOW}22, 80, 443, 2022, 8080${NC}"
+    echo -e "\n${RED}[1/6]${NC} Menghentikan service..."
+    progress_bar 3
+    
+    systemctl stop wings > /dev/null 2>&1 2>/dev/null
+    systemctl stop nginx > /dev/null 2>&1
+    systemctl stop mariadb > /dev/null 2>&1
+    systemctl stop redis-server > /dev/null 2>&1
+    
+    echo -e "\n${RED}[2/6]${NC} Menghapus panel..."
+    progress_bar 4
+    
+    rm -rf /var/www/pterodactyl > /dev/null 2>&1
+    rm -f /etc/nginx/sites-available/pterodactyl.conf > /dev/null 2>&1
+    rm -f /etc/nginx/sites-enabled/pterodactyl.conf > /dev/null 2>&1
+    
+    echo -e "\n${RED}[3/6]${NC} Menghapus wings..."
+    progress_bar 3
+    
+    rm -f /usr/local/bin/wings > /dev/null 2>&1
+    rm -rf /etc/pterodactyl > /dev/null 2>&1
+    rm -rf /var/lib/pterodactyl > /dev/null 2>&1
+    rm -rf /var/log/pterodactyl > /dev/null 2>&1
+    rm -f /etc/systemd/system/wings.service > /dev/null 2>&1
+    
+    echo -e "\n${RED}[4/6]${NC} Menghapus database..."
+    progress_bar 3
+    
+    mysql -e "DROP DATABASE IF EXISTS panel;" > /dev/null 2>&1
+    mysql -e "DROP USER IF EXISTS 'pterodactyl'@'127.0.0.1';" > /dev/null 2>&1
+    mysql -e "FLUSH PRIVILEGES;" > /dev/null 2>&1
+    
+    echo -e "\n${RED}[5/6]${NC} Menghapus dependencies..."
+    progress_bar 5
+    
+    apt-get -y remove --purge php8.1* mariadb-server nginx redis-server docker.io docker-compose > /dev/null 2>&1
+    apt-get -y autoremove > /dev/null 2>&1
+    
+    echo -e "\n${RED}[6/6]${NC} Membersihkan sistem..."
+    progress_bar 3
+    
+    apt-get clean > /dev/null 2>&1
+    rm -rf /var/lib/apt/lists/*
+    systemctl daemon-reload > /dev/null 2>&1
+    
+    echo -e "\n${GREEN}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}✓ SEMUA KONFIGURASI BERHASIL DIHAPUS!${NC}"
+    echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
 }
 
-# Fungsi main untuk instalasi lengkap
-install_complete() {
-    show_header
-    echo -e "${GREEN}Memulai instalasi Pterodactyl lengkap...${NC}"
-    echo -e "Konfigurasi otomatis: ${YELLOW}$AUTO_USERNAME / $AUTO_PASSWORD${NC}"
-    echo ""
-    
-    # Jalankan semua fungsi
-    update_system
-    install_dependencies
-    configure_database
-    install_panel
-    configure_nginx
-    install_wings
-    configure_firewall
-    setup_cron
-    install_ssl
-    
-    # Tampilkan informasi setelah instalasi
-    show_post_install_info
-}
-
-# Fungsi untuk instalasi panel saja
-install_panel_only() {
-    show_header
-    echo -e "${GREEN}Memulai instalasi Panel saja...${NC}"
-    
-    update_system
-    install_dependencies
-    configure_database
-    install_panel
-    configure_nginx
-    configure_firewall
-    setup_cron
-    install_ssl
-    
-    show_post_install_info
-}
-
-# Fungsi untuk instalasi wings saja
-install_wings_only() {
-    show_header
-    echo -e "${GREEN}Memulai instalasi Wings saja...${NC}"
-    
-    update_system
-    install_wings
-    configure_firewall
-    
-    echo -e "${GREEN}Wings berhasil diinstal!${NC}"
-    echo ""
-    echo -e "${BLUE}=== INFORMASI WINGS ===${NC}"
-    echo -e "Config: ${YELLOW}/etc/pterodactyl/config.yml${NC}"
-    echo -e "Log: ${YELLOW}/var/log/pterodactyl/wings.log${NC}"
-    echo ""
-    echo -e "${YELLOW}Catatan: Anda perlu menghubungkan Wings ke panel dengan API key${NC}"
-}
-
-# Fungsi tampilan menu utama
-main_menu() {
+# Fungsi untuk menampilkan menu
+show_menu() {
     while true; do
         show_header
-        echo -e "${GREEN}PILIH JENIS INSTALASI:${NC}"
-        echo ""
-        echo -e "${BLUE}KONFIGURASI OTOMATIS AKTIF:${NC}"
-        echo -e "Email: ${YELLOW}$AUTO_EMAIL${NC}"
-        echo -e "User:  ${YELLOW}$AUTO_USERNAME${NC}"
-        echo -e "Pass:  ${YELLOW}$AUTO_PASSWORD${NC}"
-        echo ""
-        echo "1. Install LENGKAP (Panel + Wings)"
-        echo "2. Install PANEL saja"
-        echo "3. Install WINGS saja"
-        echo "4. Install SSL Let's Encrypt"
-        echo "5. Cek Status Services"
-        echo "6. Tampilkan Informasi Login"
-        echo "7. Keluar"
-        echo ""
-        read -p "Pilihan [1-7]: " choice
+        echo -e "${CYAN}"
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        echo "║                      PILIHAN INSTALLASI                      ║"
+        echo "╠══════════════════════════════════════════════════════════════╣"
+        echo "║   ${GREEN}1.${CYAN}  Install Panel Pterodactyl                      ║"
+        echo "║   ${GREEN}2.${CYAN}  Install Wings (Daemon)                         ║"
+        echo "║   ${GREEN}3.${CYAN}  Install Panel + Wings                          ║"
+        echo "║   ${RED}4.${CYAN}  Hapus Semua Konfigurasi                        ║"
+        echo "║   ${YELLOW}0.${CYAN}  Keluar                                       ║"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+        echo -e "${NC}"
+        
+        read -p "Pilih opsi (0-4): " choice
         
         case $choice in
             1)
-                install_complete
+                echo -e "\n${BLUE}Memulai instalasi Panel...${NC}"
+                check_root
+                check_os
+                update_system
+                install_dependencies
+                configure_database
+                install_panel
+                read -p "Press Enter to continue..."
                 ;;
             2)
-                install_panel_only
+                echo -e "\n${BLUE}Memulai instalasi Wings...${NC}"
+                check_root
+                check_os
+                update_system
+                install_wings
+                read -p "Press Enter to continue..."
                 ;;
             3)
-                install_wings_only
+                echo -e "\n${BLUE}Memulai instalasi Panel + Wings...${NC}"
+                check_root
+                check_os
+                update_system
+                install_dependencies
+                configure_database
+                install_panel
+                install_wings
+                read -p "Press Enter to continue..."
                 ;;
             4)
-                install_ssl
+                uninstall_all
+                read -p "Press Enter to continue..."
                 ;;
-            5)
-                show_header
-                echo -e "${GREEN}Status Services:${NC}"
-                echo ""
-                systemctl status nginx mariadb wings --no-pager
-                ;;
-            6)
-                if [[ -f /root/pterodactyl_admin_credentials.txt ]]; then
-                    cat /root/pterodactyl_admin_credentials.txt
-                else
-                    echo -e "${RED}Panel belum terinstal!${NC}"
-                fi
-                ;;
-            7)
-                echo -e "${GREEN}Keluar...${NC}"
+            0)
+                echo -e "\n${GREEN}Terima kasih telah menggunakan script installer!${NC}"
                 exit 0
                 ;;
             *)
-                echo -e "${RED}Pilihan tidak valid!${NC}"
+                echo -e "\n${RED}Pilihan tidak valid!${NC}"
+                sleep 2
                 ;;
         esac
-        
-        echo ""
-        echo -e "${YELLOW}Tekan Enter untuk melanjutkan...${NC}"
-        read -r
     done
 }
 
-# Jalankan script
-check_root
-check_ubuntu_version
-main_menu
+# Fungsi utama
+main() {
+    # Cek jika ada parameter
+    if [[ $# -gt 0 ]]; then
+        case $1 in
+            --panel)
+                check_root
+                check_os
+                update_system
+                install_dependencies
+                configure_database
+                install_panel
+                ;;
+            --wings)
+                check_root
+                check_os
+                update_system
+                install_wings
+                ;;
+            --uninstall)
+                uninstall_all
+                ;;
+            --help)
+                echo -e "${CYAN}Penggunaan:${NC}"
+                echo "  ./install.sh              # Menu interaktif"
+                echo "  ./install.sh --panel      # Install panel saja"
+                echo "  ./install.sh --wings      # Install wings saja"
+                echo "  ./install.sh --uninstall  # Hapus semua"
+                echo "  ./install.sh --help       # Tampilkan bantuan"
+                ;;
+            *)
+                echo -e "${RED}Parameter tidak dikenal!${NC}"
+                echo "Gunakan --help untuk melihat opsi"
+                exit 1
+                ;;
+        esac
+    else
+        # Jalankan menu interaktif
+        show_menu
+    fi
+}
+
+# Jalankan fungsi utama
+main "$@"
