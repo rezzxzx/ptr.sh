@@ -276,6 +276,12 @@ setup_php() {
     # Store PHP version in config
     echo "PHP_VERSION=$php_version" >> "$INSTALLER_CONF"
     
+    # Verify PHP installation
+    if ! command -v php &> /dev/null; then
+        log_message "ERROR" "PHP installation failed. Command 'php' not found."
+        exit 1
+    fi
+    
     log_message "SUCCESS" "PHP $php_version installed"
 }
 
@@ -367,18 +373,44 @@ install_panel_dependencies() {
         lsb-release gnupg apt-transport-https \
         software-properties-common
     
-    # Install Node.js LTS
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-    apt-get install -y nodejs
+    # Setup PHP FIRST (before composer)
+    setup_php
     
-    # Install Composer
-    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    # Install Node.js LTS
+    log_message "INFO" "Installing Node.js..."
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+    apt-get install -y nodejs build-essential
+    
+    # Install Composer with retry logic
+    log_message "INFO" "Installing Composer..."
+    for i in {1..3}; do
+        if curl -sS https://getcomposer.org/installer -o /tmp/composer-setup.php; then
+            if php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer --quiet; then
+                rm -f /tmp/composer-setup.php
+                log_message "SUCCESS" "Composer installed successfully"
+                break
+            fi
+        fi
+        if [[ $i -lt 3 ]]; then
+            log_message "WARNING" "Composer installation attempt $i failed, retrying..."
+            sleep 2
+        else
+            log_message "WARNING" "Failed to install Composer after 3 attempts, trying alternative method..."
+            # Try alternative installation method
+            php -r "copy('https://getcomposer.org/installer', '/tmp/composer-setup-alt.php');"
+            php /tmp/composer-setup-alt.php --install-dir=/usr/local/bin --filename=composer
+            rm -f /tmp/composer-setup-alt.php
+        fi
+    done
+    
+    # Verify composer installation
+    if ! command -v composer &> /dev/null; then
+        log_message "ERROR" "Composer installation failed completely"
+        exit 1
+    fi
     
     # Install Redis
     apt-get install -y redis-server
-    
-    # Setup PHP
-    setup_php
     
     # Setup database
     setup_database
@@ -416,7 +448,7 @@ install_panel() {
     chmod -R 755 storage/* bootstrap/cache/
     
     update_progress "Installing PHP dependencies"
-    sudo -u "$PANEL_USER" composer install --no-dev --optimize-autoloader
+    sudo -u "$PANEL_USER" php -d memory_limit=-1 /usr/local/bin/composer install --no-dev --optimize-autoloader --no-interaction
     
     update_progress "Setting up environment"
     cp .env.example .env
