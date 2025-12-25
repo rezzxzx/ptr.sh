@@ -1,151 +1,209 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/bin/bash
 
-TZ_DEFAULT="Asia/Jakarta"
-PANEL_DIR="/var/www/pterodactyl"
-WEB_USER="www-data"
+##############################################
+# Pterodactyl Panel Auto Installer
+# Support: Ubuntu 24.04, 22.04, 20.04
+# Author: Auto Installer Script
+##############################################
 
-SSL_EMAIL="ryezx@gmail.com"
-ADMIN_EMAIL="ryezx@gmail.com"
+set -e
+
+# Warna untuk output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Fungsi print
+print_success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+print_info() {
+    echo -e "${GREEN}[i]${NC} $1"
+}
+
+# Check root
+if [[ $EUID -ne 0 ]]; then
+   print_error "Script ini harus dijalankan sebagai root!"
+   exit 1
+fi
+
+# Deteksi versi Ubuntu
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    VER=$VERSION_ID
+else
+    print_error "Tidak dapat mendeteksi versi OS"
+    exit 1
+fi
+
+if [[ "$OS" != "ubuntu" ]]; then
+    print_error "Script ini hanya untuk Ubuntu!"
+    exit 1
+fi
+
+if [[ ! "$VER" =~ ^(20.04|22.04|24.04)$ ]]; then
+    print_error "Versi Ubuntu tidak didukung. Hanya mendukung 20.04, 22.04, dan 24.04"
+    exit 1
+fi
+
+print_success "Terdeteksi: Ubuntu $VER"
+
+# Konfigurasi
+echo ""
+print_info "=== KONFIGURASI PTERODACTYL PANEL ==="
+
+# Input FQDN (manual)
+read -p "Masukkan FQDN/Domain (contoh: panel.domain.com): " FQDN
+
+# Konfigurasi Otomatis Lainnya
+TIMEZONE="Asia/Jakarta"
+EMAIL="ryezx@gmail.com"
 ADMIN_USER="ryezx"
 ADMIN_PASS="ryezx"
+MYSQL_ROOT_PASS="ryezx$(openssl rand -hex 4)"
+MYSQL_PTERO_PASS="ryezx$(openssl rand -hex 4)"
 
-GREEN="\033[0;32m"; YELLOW="\033[1;33m"; RED="\033[0;31m"; BLUE="\033[0;34m"; NC="\033[0m"
-STEP=0
-TOTAL_STEPS=12
+# Tampilkan konfigurasi
+echo ""
+print_success "Konfigurasi yang akan digunakan:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "FQDN/Domain : $FQDN"
+echo "Timezone    : $TIMEZONE"
+echo "Email       : $EMAIL"
+echo "Username    : $ADMIN_USER"
+echo "Password    : $ADMIN_PASS"
+echo "MySQL Root  : $MYSQL_ROOT_PASS"
+echo "MySQL Panel : $MYSQL_PTERO_PASS"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
 
-say(){ echo -e "${BLUE}==>${NC} $*"; }
-ok(){ echo -e "${GREEN}[OK]${NC} $*"; }
-warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
-err(){ echo -e "${RED}[ERR]${NC} $*"; }
+print_warning "Instalasi akan dimulai dalam 5 detik..."
+print_warning "Tekan Ctrl+C untuk membatalkan"
+sleep 5
 
-progress(){
-  STEP=$((STEP+1))
-  local pct=$(( STEP * 100 / TOTAL_STEPS ))
-  echo -e "${GREEN}-- Step ${STEP}/${TOTAL_STEPS} (${pct}%) --${NC} $*"
-}
+# Update sistem
+print_info "Mengupdate sistem..."
+apt update && apt upgrade -y
+print_success "Sistem berhasil diupdate"
 
-need_root(){
-  [[ "${EUID}" -eq 0 ]] || { err "Run as root: sudo bash ptr.sh"; exit 1; }
-}
+# Install dependencies
+print_info "Menginstall dependencies..."
+apt install -y software-properties-common curl apt-transport-https ca-certificates gnupg
+LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
+apt update
+print_success "Dependencies terinstall"
 
-detect_ubuntu(){
-  . /etc/os-release
-  [[ "${ID}" == "ubuntu" ]] || { err "OS bukan Ubuntu: ${ID}"; exit 1; }
-  case "${VERSION_ID}" in
-    "20.04"|"22.04"|"24.04") ok "Ubuntu ${VERSION_ID} terdeteksi." ;;
-    *) err "Ubuntu ${VERSION_ID} tidak disupport."; exit 1 ;;
-  esac
-}
+# Install PHP 8.1 dan extensions
+print_info "Menginstall PHP 8.1..."
+apt install -y php8.1 php8.1-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip}
+print_success "PHP 8.1 terinstall"
 
-rand_pw(){ tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
+# Install Composer
+print_info "Menginstall Composer..."
+curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+print_success "Composer terinstall"
 
-get_latest_panel_tag(){
-  local fallback="v1.11.11"
-  local tag="${fallback}"
-  if command -v curl >/dev/null 2>&1; then
-    local got
-    got="$(curl -fsSL https://api.github.com/repos/pterodactyl/panel/releases/latest \
-      | grep -m1 '"tag_name"' | cut -d '"' -f4 || true)"
-    [[ -n "${got}" ]] && tag="${got}"
-  fi
-  echo "${tag}"
-}
+# Install dan konfigurasi MySQL
+print_info "Menginstall MySQL..."
+apt install -y mysql-server
+print_success "MySQL terinstall"
 
-# Print the failing command + line if something blows up
-on_fail(){
-  local code=$?
-  err "Gagal di line ${BASH_LINENO[0]}: ${BASH_COMMAND}"
-  err "Exit code: ${code}"
-  exit "${code}"
-}
-trap on_fail ERR
+print_info "Mengkonfigurasi MySQL..."
+mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}';"
+mysql -uroot -p${MYSQL_ROOT_PASS} -e "CREATE DATABASE panel;"
+mysql -uroot -p${MYSQL_ROOT_PASS} -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PTERO_PASS}';"
+mysql -uroot -p${MYSQL_ROOT_PASS} -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1' WITH GRANT OPTION;"
+mysql -uroot -p${MYSQL_ROOT_PASS} -e "FLUSH PRIVILEGES;"
+print_success "MySQL dikonfigurasi"
 
-need_root
-progress "Cek OS"
-detect_ubuntu
+# Install Redis
+print_info "Menginstall Redis..."
+apt install -y redis-server
+systemctl enable redis-server
+systemctl start redis-server
+print_success "Redis terinstall"
 
-echo
-read -rp "Masukin FQDN panel (contoh: panel.domainlu.com): " FQDN
-[[ -n "${FQDN}" ]] || { err "FQDN kosong."; exit 1; }
-
-DB_NAME="pterodactyl"
-DB_USER="ptero"
-DB_PASS="$(rand_pw)"
-
-progress "Set timezone → ${TZ_DEFAULT}"
-timedatectl set-timezone "${TZ_DEFAULT}" || true
-
-progress "Update apt + install deps"
-apt-get update -y
-apt-get install -y curl wget ca-certificates gnupg unzip tar git ufw software-properties-common
-
-progress "Install MariaDB + Redis + Nginx + Certbot"
-apt-get install -y mariadb-server redis-server nginx certbot python3-certbot-nginx
-
-progress "Install PHP (repo bawaan Ubuntu) + extensions"
-apt-get install -y \
-  php php-cli php-fpm php-mysql php-redis php-gd php-mbstring \
-  php-xml php-curl php-zip php-bcmath php-intl
-
-progress "Install Composer"
-if ! command -v composer >/dev/null 2>&1; then
-  curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-fi
-ok "Composer: $(composer --version | head -n1)"
-
-progress "Setup DB"
-mysql -u root <<MYSQL
-CREATE DATABASE IF NOT EXISTS ${DB_NAME};
-CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
-GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'127.0.0.1' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
-MYSQL
-
-progress "Download & extract Panel"
-mkdir -p "${PANEL_DIR}"
-cd "${PANEL_DIR}"
-TAG="$(get_latest_panel_tag)"
-ok "Panel tag: ${TAG}"
-curl -fsSL -o panel.tar.gz "https://github.com/pterodactyl/panel/releases/download/${TAG}/panel.tar.gz"
-tar -xzf panel.tar.gz
+# Download Pterodactyl
+print_info "Mendownload Pterodactyl Panel..."
+mkdir -p /var/www/pterodactyl
+cd /var/www/pterodactyl
+curl -Lo panel.tar.gz https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz
+tar -xzvf panel.tar.gz
 chmod -R 755 storage/* bootstrap/cache/
+print_success "Pterodactyl Panel didownload"
 
-progress "Composer install + app key"
-export COMPOSER_ALLOW_SUPERUSER=1
-composer install --no-dev --optimize-autoloader
+# Install dependencies Pterodactyl
+print_info "Menginstall dependencies Pterodactyl..."
+cp .env.example .env
+composer install --no-dev --optimize-autoloader --no-interaction
+print_success "Dependencies terinstall"
+
+# Setup environment
+print_info "Mengkonfigurasi environment..."
 php artisan key:generate --force
+php artisan p:environment:setup \
+    --author=${EMAIL} \
+    --url=https://${FQDN} \
+    --timezone=${TIMEZONE} \
+    --cache=redis \
+    --session=redis \
+    --queue=redis \
+    --redis-host=127.0.0.1 \
+    --redis-pass= \
+    --redis-port=6379 \
+    --no-interaction
 
-progress "Configure environment + DB + migrate"
-php artisan p:environment:setup -n \
-  --author="${ADMIN_EMAIL}" \
-  --url="https://${FQDN}" \
-  --timezone="${TZ_DEFAULT}" \
-  --cache="redis" \
-  --session="database" \
-  --queue="redis"
+php artisan p:environment:database \
+    --host=127.0.0.1 \
+    --port=3306 \
+    --database=panel \
+    --username=pterodactyl \
+    --password=${MYSQL_PTERO_PASS} \
+    --no-interaction
 
-php artisan p:environment:database -n \
-  --host="127.0.0.1" \
-  --port="3306" \
-  --database="${DB_NAME}" \
-  --username="${DB_USER}" \
-  --password="${DB_PASS}"
+print_success "Environment dikonfigurasi"
 
+# Migrasi database
+print_info "Melakukan migrasi database..."
 php artisan migrate --seed --force
+print_success "Database berhasil dimigrasi"
 
-progress "Create admin user"
-php artisan p:user:make -n \
-  --email="${ADMIN_EMAIL}" \
-  --username="${ADMIN_USER}" \
-  --name="Administrator" \
-  --password="${ADMIN_PASS}" \
-  --admin=1
+# Buat user admin
+print_info "Membuat user admin..."
+php artisan p:user:make \
+    --email=${EMAIL} \
+    --username=${ADMIN_USER} \
+    --name-first=Admin \
+    --name-last=User \
+    --password=${ADMIN_PASS} \
+    --admin=1 \
+    --no-interaction
+print_success "User admin dibuat"
 
-progress "Permissions + queue worker"
-chown -R ${WEB_USER}:${WEB_USER} "${PANEL_DIR}"
+# Set permissions
+print_info "Mengatur permissions..."
+chown -R www-data:www-data /var/www/pterodactyl/*
+print_success "Permissions diatur"
 
-cat >/etc/systemd/system/pteroq.service <<'SERVICE'
+# Setup Cron
+print_info "Mengatur Cron job..."
+(crontab -l 2>/dev/null; echo "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1") | crontab -
+print_success "Cron job diatur"
+
+# Setup Queue Worker
+print_info "Mengatur Queue Worker..."
+cat > /etc/systemd/system/pteroq.service <<EOF
 [Unit]
 Description=Pterodactyl Queue Worker
 After=redis-server.service
@@ -154,56 +212,159 @@ After=redis-server.service
 User=www-data
 Group=www-data
 Restart=always
-ExecStart=/usr/bin/php /var/www/pterodactyl/artisan queue:work --sleep=3 --tries=3 --timeout=120
+ExecStart=/usr/bin/php /var/www/pterodactyl/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
+StartLimitInterval=180
+StartLimitBurst=30
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
-SERVICE
+EOF
 
-systemctl daemon-reload
-systemctl enable --now pteroq
+systemctl enable pteroq.service
+systemctl start pteroq.service
+print_success "Queue Worker diatur"
 
-progress "Nginx config"
-PHP_SOCK="$(php -r 'echo "unix:/run/php/php".PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION."-fpm.sock";')"
+# Install Nginx
+print_info "Menginstall Nginx..."
+apt install -y nginx
+print_success "Nginx terinstall"
 
-cat >/etc/nginx/sites-available/pterodactyl.conf <<NGINX
+# Konfigurasi Nginx
+print_info "Mengkonfigurasi Nginx..."
+cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
-  listen 80;
-  server_name ${FQDN};
-
-  root ${PANEL_DIR}/public;
-  index index.php;
-
-  client_max_body_size 100m;
-
-  location / {
-    try_files \$uri \$uri/ /index.php?\$query_string;
-  }
-
-  location ~ \.php$ {
-    include snippets/fastcgi-php.conf;
-    fastcgi_pass ${PHP_SOCK};
-  }
-
-  location ~ /\.(?!well-known).* {
-    deny all;
-  }
+    listen 80;
+    server_name ${FQDN};
+    return 301 https://\$server_name\$request_uri;
 }
-NGINX
 
-ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
-rm -f /etc/nginx/sites-enabled/default || true
+server {
+    listen 443 ssl http2;
+    server_name ${FQDN};
+
+    root /var/www/pterodactyl/public;
+    index index.php;
+
+    access_log /var/log/nginx/pterodactyl.app-access.log;
+    error_log  /var/log/nginx/pterodactyl.app-error.log error;
+
+    client_max_body_size 100m;
+    client_body_timeout 120s;
+
+    sendfile off;
+
+    # SSL akan dikonfigurasi dengan Certbot
+    ssl_certificate /etc/ssl/certs/ssl-cert-snakeoil.pem;
+    ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384";
+    ssl_prefer_server_ciphers on;
+
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Robots-Tag none;
+    add_header Content-Security-Policy "frame-ancestors 'self'";
+    add_header X-Frame-Options DENY;
+    add_header Referrer-Policy same-origin;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_intercept_errors off;
+        fastcgi_buffer_size 16k;
+        fastcgi_buffers 4 16k;
+        fastcgi_connect_timeout 300;
+        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 300;
+        include /etc/nginx/fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+
+ln -s /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/pterodactyl.conf
+rm -f /etc/nginx/sites-enabled/default
 nginx -t
-systemctl reload nginx
+systemctl restart nginx
+print_success "Nginx dikonfigurasi"
 
-progress "Firewall + SSL"
-ufw allow 80/tcp || true
-ufw allow 443/tcp || true
+# Install Certbot untuk SSL
+print_info "Menginstall Certbot untuk SSL..."
+apt install -y certbot python3-certbot-nginx
+print_success "Certbot terinstall"
 
-certbot --nginx -d "${FQDN}" --non-interactive --agree-tos -m "${SSL_EMAIL}" --redirect || warn "Certbot gagal: pastiin DNS A record FQDN udah ke IP VPS & port 80/443 kebuka."
+print_info "Mendapatkan SSL certificate untuk ${FQDN}..."
+certbot --nginx -d ${FQDN} --non-interactive --agree-tos -m ${EMAIL} --redirect || print_warning "SSL gagal dikonfigurasi otomatis. Pastikan domain sudah mengarah ke server ini, lalu jalankan: certbot --nginx -d ${FQDN}"
 
-echo
-ok "DONE"
-echo "Panel URL : https://${FQDN}"
-echo "Admin     : ${ADMIN_USER} / ${ADMIN_PASS} (${ADMIN_EMAIL})"
-echo "DB pass   : ${DB_PASS}  (SIMPEN!)"
+# Setup firewall (opsional)
+print_info "Mengkonfigurasi firewall..."
+if command -v ufw &> /dev/null; then
+    ufw allow 22/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw --force enable
+    print_success "Firewall dikonfigurasi"
+fi
+
+# Selesai
+echo ""
+echo "======================================"
+print_success "INSTALASI SELESAI!"
+echo "======================================"
+echo ""
+print_info "Informasi Login Panel:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "URL      : https://${FQDN}"
+echo "Username : ${ADMIN_USER}"
+echo "Password : ${ADMIN_PASS}"
+echo "Email    : ${EMAIL}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+print_warning "Informasi Database (SIMPAN INI!):"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "MySQL Root Password : ${MYSQL_ROOT_PASS}"
+echo "Database Password   : ${MYSQL_PTERO_PASS}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+print_info "Langkah Selanjutnya:"
+echo "1. Pastikan domain ${FQDN} sudah mengarah ke server ini"
+echo "2. Akses panel di: https://${FQDN}"
+echo "3. Login dengan username dan password di atas"
+echo "4. Install Wings untuk membuat node server"
+echo ""
+print_success "Selamat! Panel Pterodactyl siap digunakan!"
+echo ""
+
+# Simpan kredensial ke file
+cat > /root/pterodactyl-credentials.txt <<EOF
+====================================
+PTERODACTYL PANEL CREDENTIALS
+====================================
+Tanggal Install: $(date)
+
+Panel URL    : https://${FQDN}
+Username     : ${ADMIN_USER}
+Password     : ${ADMIN_PASS}
+Email        : ${EMAIL}
+
+MySQL Root   : ${MYSQL_ROOT_PASS}
+Database Pass: ${MYSQL_PTERO_PASS}
+
+Location: /var/www/pterodactyl
+EOF
+
+print_success "Kredensial disimpan di: /root/pterodactyl-credentials.txt"
