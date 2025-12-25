@@ -117,11 +117,19 @@ print_success "Composer terinstall"
 # Install dan konfigurasi MySQL
 print_info "Menginstall MySQL..."
 apt install -y mysql-server
+systemctl enable mysql
+systemctl start mysql
 print_success "MySQL terinstall"
 
 print_info "Mengkonfigurasi MySQL..."
-mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}';"
+# Set root password dengan cara yang lebih aman
+mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}';" 2>/dev/null || \
+sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}';"
+
+# Buat database dan user
+mysql -uroot -p${MYSQL_ROOT_PASS} -e "DROP DATABASE IF EXISTS panel;"
 mysql -uroot -p${MYSQL_ROOT_PASS} -e "CREATE DATABASE panel;"
+mysql -uroot -p${MYSQL_ROOT_PASS} -e "DROP USER IF EXISTS 'pterodactyl'@'127.0.0.1';"
 mysql -uroot -p${MYSQL_ROOT_PASS} -e "CREATE USER 'pterodactyl'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PTERO_PASS}';"
 mysql -uroot -p${MYSQL_ROOT_PASS} -e "GRANT ALL PRIVILEGES ON panel.* TO 'pterodactyl'@'127.0.0.1' WITH GRANT OPTION;"
 mysql -uroot -p${MYSQL_ROOT_PASS} -e "FLUSH PRIVILEGES;"
