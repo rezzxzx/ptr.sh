@@ -104,10 +104,10 @@ LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
 apt update
 print_success "Dependencies terinstall"
 
-# Install PHP 8.1 dan extensions
-print_info "Menginstall PHP 8.1..."
-apt install -y php8.1 php8.1-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip}
-print_success "PHP 8.1 terinstall"
+# Install PHP 8.3 dan extensions
+print_info "Menginstall PHP 8.3..."
+apt install -y php8.3 php8.3-{common,cli,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip}
+print_success "PHP 8.3 terinstall"
 
 # Install Composer
 print_info "Menginstall Composer..."
@@ -275,7 +275,7 @@ server {
 
     location ~ \.php$ {
         fastcgi_split_path_info ^(.+\.php)(/.+)$;
-        fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
