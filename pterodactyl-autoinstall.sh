@@ -1,269 +1,663 @@
 #!/bin/bash
 
-# Script: pterodactyl-auto-installer.sh
-# Author: Auto-generated
-# Description: Script otomatis install Wings Pterodactyl dengan konfigurasi otomatis
+# ==============================================
+# Pterodactyl Panel + Wings Installer Script
+# Version: 2.0.0
+# Author: Senior Linux SRE/DevOps
+# ==============================================
+
+set -Eeuo pipefail
+trap 'handle_error $? $LINENO' ERR
+
+# ==============================================
+# GLOBAL VARIABLES & CONFIGURATION
+# ==============================================
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
+BOLD='\033[1m'
 
-# Configuration variables
-PANEL_URL=""
-PANEL_TOKEN=""
-NODE_NAME="AutoNode-$(date +%s)"
-MEMORY_LIMIT="1024"
-DISK_LIMIT="5120"
-LOCATION_ID="1"
+# Installation paths and settings
+PANEL_PATH="/var/www/pterodactyl"
+PANEL_USER="ryezx"
+PANEL_PASSWORD="ryezx"
+PANEL_EMAIL="ryezx@gmail.com"
+PANEL_FIRSTNAME="ryezx"
+PANEL_LASTNAME="ryezx"
+PANEL_DB_NAME="panel"
+PANEL_DB_USER="pterodactyl"
+INSTALLER_CONF="/etc/pterodactyl/installer.conf"
+LOG_FILE="/var/log/pterodactyl-installer.log"
+WINGS_BINARY="/usr/local/bin/wings"
+WINGS_SERVICE="/etc/systemd/system/wings.service"
+PANEL_DOMAIN=""
+SERVER_IP=""
+OS_NAME=""
+OS_VERSION=""
+OS_CODENAME=""
+INSTALLED_COMPONENTS=()
 
-# Functions
-print_header() {
-    clear
-    echo -e "${BLUE}"
-    echo "=============================================="
-    echo "    PTERODACTYL WINGS AUTO INSTALLER"
-    echo "=============================================="
-    echo -e "${NC}"
+# Port configurations
+PANEL_PORTS=("80/tcp" "443/tcp")
+WINGS_PORTS=("8080/tcp" "2022/tcp")
+
+# Progress tracking
+TOTAL_STEPS=0
+CURRENT_STEP=0
+
+# ==============================================
+# ERROR HANDLING & LOGGING
+# ==============================================
+
+handle_error() {
+    local exit_code=$1
+    local line_no=$2
+    echo -e "${RED}[ERROR] Script failed at line $line_no with exit code $exit_code${NC}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Check detailed logs at: $LOG_FILE${NC}"
+    echo -e "${YELLOW}For troubleshooting, refer to: https://pterodactyl.io/community/installation-guides/panel/${NC}"
+    exit "$exit_code"
 }
 
-print_success() {
-    echo -e "${GREEN}[✓] $1${NC}"
+log_message() {
+    local level="$1"
+    local message="$2"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+    
+    if [[ "$level" == "INFO" ]]; then
+        echo -e "${BLUE}[INFO]${NC} $message"
+    elif [[ "$level" == "WARNING" ]]; then
+        echo -e "${YELLOW}[WARNING]${NC} $message"
+    elif [[ "$level" == "ERROR" ]]; then
+        echo -e "${RED}[ERROR]${NC} $message"
+    elif [[ "$level" == "SUCCESS" ]]; then
+        echo -e "${GREEN}[SUCCESS]${NC} $message"
+    fi
 }
 
-print_error() {
-    echo -e "${RED}[✗] $1${NC}"
+update_progress() {
+    local step_name="$1"
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+    local percent=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+    echo -e "${BLUE}[${percent}%]${NC} $step_name"
 }
 
-print_info() {
-    echo -e "${YELLOW}[i] $1${NC}"
-}
+# ==============================================
+# INITIALIZATION & VALIDATION
+# ==============================================
 
-print_step() {
-    echo -e "${BLUE}[→] $1${NC}"
-}
-
-# Check if running as root
-check_root() {
+require_root() {
     if [[ $EUID -ne 0 ]]; then
-        print_error "Script ini harus dijalankan sebagai root!"
+        echo -e "${RED}This script must be run as root${NC}"
+        echo -e "Run with: ${BOLD}sudo bash $0${NC}"
         exit 1
     fi
 }
 
-# Check OS compatibility
-check_os() {
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        OS=$ID
-        VER=$VERSION_ID
-    else
-        print_error "Tidak dapat mendeteksi sistem operasi!"
+detect_os() {
+    log_message "INFO" "Detecting operating system..."
+    
+    if [[ ! -f /etc/os-release ]]; then
+        log_message "ERROR" "Cannot detect OS: /etc/os-release not found"
         exit 1
     fi
     
-    print_info "Sistem Operasi: $OS $VER"
+    # shellcheck source=/dev/null
+    source /etc/os-release
     
-    if [[ "$OS" != "ubuntu" && "$OS" != "debian" && "$OS" != "centos" && "$OS" != "rocky" && "$OS" != "almalinux" ]]; then
-        print_error "Sistem operasi tidak didukung!"
-        exit 1
-    fi
-}
-
-# Get user input
-get_input() {
-    print_header
-    echo -e "${YELLOW}Konfigurasi Otomatis Pterodactyl Wings${NC}"
-    echo ""
+    OS_NAME="$ID"
+    OS_VERSION="$VERSION_ID"
+    OS_CODENAME="$VERSION_CODENAME"
     
-    # Get FQDN
-    while true; do
-        read -p "Masukkan FQDN/domain untuk node ini (contoh: node.domain.com): " FQDN
-        if [[ -n "$FQDN" ]]; then
-            break
-        else
-            print_error "FQDN tidak boleh kosong!"
-        fi
-    done
+    # Validate supported OS
+    local supported=0
     
-    # Get Panel URL
-    read -p "Masukkan URL Panel Pterodactyl [https://panel.domain.com]: " PANEL_URL
-    if [[ -z "$PANEL_URL" ]]; then
-        PANEL_URL="https://panel.domain.com"
-    fi
-    
-    # Auto-generate email and username
-    NODE_EMAIL="node_$(date +%s)@${FQDN#*.}"
-    NODE_USERNAME="node_$(hostname)_$(date +%Y%m%d)"
-    
-    print_info "Email akan dibuat otomatis: $NODE_EMAIL"
-    print_info "Username akan dibuat otomatis: $NODE_USERNAME"
-    
-    # Get configuration token
-    while true; do
-        echo ""
-        print_info "Untuk mendapatkan Configuration Token:"
-        print_info "1. Login ke panel Pterodactyl"
-        print_info "2. Buka 'Configuration' > 'Nodes'"
-        print_info "3. Klik node yang sudah dibuat atau buat baru"
-        print_info "4. Scroll ke bawah, klik 'Generate Token'"
-        echo ""
-        read -p "Masukkan Configuration Token dari panel: " PANEL_TOKEN
-        if [[ -n "$PANEL_TOKEN" && ${#PANEL_TOKEN} -gt 20 ]]; then
-            break
-        else
-            print_error "Token tidak valid atau terlalu pendek!"
-        fi
-    done
-    
-    # Optional configurations
-    read -p "Masukkan nama node [$NODE_NAME]: " input_node_name
-    [[ -n "$input_node_name" ]] && NODE_NAME="$input_node_name"
-    
-    read -p "Masukkan memory limit (MB) [$MEMORY_LIMIT]: " input_memory
-    [[ -n "$input_memory" ]] && MEMORY_LIMIT="$input_memory"
-    
-    read -p "Masukkan disk limit (MB) [$DISK_LIMIT]: " input_disk
-    [[ -n "$input_disk" ]] && DISK_LIMIT="$input_disk"
-    
-    # Summary
-    echo ""
-    print_info "=== SUMMARY KONFIGURASI ==="
-    echo "FQDN: $FQDN"
-    echo "Panel URL: $PANEL_URL"
-    echo "Node Name: $NODE_NAME"
-    echo "Node Email: $NODE_EMAIL"
-    echo "Node Username: $NODE_USERNAME"
-    echo "Memory Limit: $MEMORY_LIMIT MB"
-    echo "Disk Limit: $DISK_LIMIT MB"
-    echo ""
-    
-    read -p "Lanjutkan installasi? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_error "Installasi dibatalkan!"
-        exit 0
-    fi
-}
-
-# Install dependencies based on OS
-install_dependencies() {
-    print_step "Menginstall dependencies..."
-    
-    case $OS in
-        ubuntu|debian)
-            apt-get update
-            apt-get install -y curl tar sqlite3
+    case "$OS_NAME" in
+        ubuntu)
+            if [[ "$OS_VERSION" == "20.04" || "$OS_VERSION" == "22.04" || "$OS_VERSION" == "24.04" ]]; then
+                supported=1
+            fi
             ;;
-        centos|rocky|almalinux)
-            yum update -y
-            yum install -y curl tar sqlite3
+        debian)
+            if [[ "$OS_VERSION" == "11" || "$OS_VERSION" == "12" ]]; then
+                supported=1
+            fi
             ;;
     esac
     
-    print_success "Dependencies terinstall!"
-}
-
-# Install Docker
-install_docker() {
-    print_step "Menginstall Docker..."
-    
-    if command -v docker &> /dev/null; then
-        print_info "Docker sudah terinstall, melewati..."
-        return
+    if [[ $supported -eq 0 ]]; then
+        log_message "ERROR" "Unsupported OS: $OS_NAME $OS_VERSION"
+        echo -e "${YELLOW}Supported versions:${NC}"
+        echo "  Ubuntu: 20.04, 22.04, 24.04"
+        echo "  Debian: 11, 12"
+        exit 1
     fi
     
-    curl -fsSL https://get.docker.com | bash
+    log_message "SUCCESS" "Detected OS: $OS_NAME $OS_VERSION ($OS_CODENAME)"
+}
+
+validate_domain() {
+    local domain="$1"
+    
+    # Basic domain format validation
+    if ! echo "$domain" | grep -Pq '^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'; then
+        log_message "ERROR" "Invalid domain format: $domain"
+        return 1
+    fi
+    
+    # Get server public IP
+    log_message "INFO" "Detecting server public IP..."
+    SERVER_IP=$(curl -s -4 --fail --max-time 10 ifconfig.me 2>/dev/null || curl -s -4 --fail --max-time 10 ipinfo.io/ip 2>/dev/null || echo "")
+    
+    if [[ -z "$SERVER_IP" ]]; then
+        log_message "WARNING" "Could not detect public IP. DNS validation skipped."
+        return 0
+    fi
+    
+    # Get DNS A record
+    log_message "INFO" "Validating DNS A record for $domain..."
+    local dns_ip
+    dns_ip=$(dig +short A "$domain" 2>/dev/null | head -n1)
+    
+    if [[ -z "$dns_ip" ]]; then
+        log_message "WARNING" "No A record found for $domain"
+        echo -e "${YELLOW}Warning: DNS A record not found or not pointing to this server.${NC}"
+        echo -e "${YELLOW}Public IP detected: $SERVER_IP${NC}"
+        read -rp "Continue anyway? (y/N): " -n1 confirm
+        echo
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    elif [[ "$dns_ip" != "$SERVER_IP" ]]; then
+        log_message "WARNING" "DNS IP mismatch: $dns_ip != $SERVER_IP"
+        echo -e "${YELLOW}Warning: DNS A record ($dns_ip) does not match server IP ($SERVER_IP).${NC}"
+        echo -e "${YELLOW}SSL certificate issuance may fail.${NC}"
+        read -rp "Continue anyway? (y/N): " -n1 confirm
+        echo
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    else
+        log_message "SUCCESS" "DNS validation passed: $domain → $SERVER_IP"
+    fi
+    
+    PANEL_DOMAIN="$domain"
+    return 0
+}
+
+# ==============================================
+# SYSTEM SETUP FUNCTIONS
+# ==============================================
+
+setup_system_user() {
+    log_message "INFO" "Setting up system user '$PANEL_USER'..."
+    
+    if id "$PANEL_USER" &>/dev/null; then
+        log_message "INFO" "User '$PANEL_USER' already exists"
+        # Update password if user exists
+        echo "$PANEL_USER:$PANEL_PASSWORD" | chpasswd 2>/dev/null || true
+    else
+        useradd -m -s /bin/bash "$PANEL_USER" 2>/dev/null || useradd -m -s /bin/bash -G sudo "$PANEL_USER"
+        echo "$PANEL_USER:$PANEL_PASSWORD" | chpasswd
+    fi
+    
+    # Store in installer config
+    echo "PANEL_USER=$PANEL_USER" >> "$INSTALLER_CONF"
+    echo "PANEL_PASSWORD=$PANEL_PASSWORD" >> "$INSTALLER_CONF"
+    
+    log_message "SUCCESS" "System user configured"
+}
+
+setup_firewall() {
+    log_message "INFO" "Configuring firewall..."
+    
+    # Install UFW if not present
+    if ! command -v ufw &>/dev/null; then
+        apt-get update
+        apt-get install -y ufw
+        systemctl enable ufw
+    fi
+    
+    # Enable UFW if not active
+    if ! ufw status | grep -q "Status: active"; then
+        ufw --force enable
+    fi
+    
+    # Allow SSH (detect current port)
+    local ssh_port
+    ssh_port=$(grep -oP '^Port \K\d+' /etc/ssh/sshd_config 2>/dev/null || echo "22")
+    ufw allow "$ssh_port/tcp" comment "SSH"
+    
+    # Allow panel ports
+    for port in "${PANEL_PORTS[@]}"; do
+        ufw allow "$port" comment "Pterodactyl Panel"
+    done
+    
+    # Store firewall rules in config
+    echo "FIREWALL_ENABLED=1" >> "$INSTALLER_CONF"
+    echo "FIREWALL_PORTS=${PANEL_PORTS[*]}" >> "$INSTALLER_CONF"
+    
+    log_message "SUCCESS" "Firewall configured"
+}
+
+setup_php() {
+    log_message "INFO" "Installing PHP stack..."
+    
+    local php_version=""
+    
+    # Determine PHP version based on OS
+    case "$OS_NAME-$OS_VERSION" in
+        ubuntu-20.04) php_version="php7.4" ;;
+        ubuntu-22.04|debian-11) php_version="php8.1" ;;
+        ubuntu-24.04|debian-12) php_version="php8.2" ;;
+        *) php_version="php8.1" ;;
+    esac
+    
+    # Install PHP and extensions
+    apt-get install -y \
+        "$php_version" \
+        "$php_version-common" \
+        "$php_version-cli" \
+        "$php_version-gd" \
+        "$php_version-mysql" \
+        "$php_version-mbstring" \
+        "$php_version-bcmath" \
+        "$php_version-xml" \
+        "$php_version-fpm" \
+        "$php_version-curl" \
+        "$php_version-zip" \
+        "$php_version-intl"
+    
+    # Store PHP version in config
+    echo "PHP_VERSION=$php_version" >> "$INSTALLER_CONF"
+    
+    log_message "SUCCESS" "PHP $php_version installed"
+}
+
+setup_database() {
+    log_message "INFO" "Setting up MariaDB database..."
+    
+    # Install MariaDB
+    apt-get install -y mariadb-server mariadb-client
+    
+    # Secure MariaDB installation
+    local root_pass
+    root_pass=$(openssl rand -base64 32)
+    
+    mysql -e "DELETE FROM mysql.user WHERE User='';"
+    mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+    mysql -e "DROP DATABASE IF EXISTS test;"
+    mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%';"
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$root_pass';"
+    mysql -e "FLUSH PRIVILEGES;"
+    
+    # Create panel database and user
+    local db_pass
+    db_pass=$(openssl rand -base64 32)
+    
+    mysql -u root -p"$root_pass" <<-EOF
+        CREATE DATABASE IF NOT EXISTS $PANEL_DB_NAME;
+        CREATE USER IF NOT EXISTS '$PANEL_DB_USER'@'127.0.0.1' IDENTIFIED BY '$db_pass';
+        GRANT ALL PRIVILEGES ON $PANEL_DB_NAME.* TO '$PANEL_DB_USER'@'127.0.0.1' WITH GRANT OPTION;
+        CREATE USER IF NOT EXISTS '$PANEL_DB_USER'@'localhost' IDENTIFIED BY '$db_pass';
+        GRANT ALL PRIVILEGES ON $PANEL_DB_NAME.* TO '$PANEL_DB_USER'@'localhost' WITH GRANT OPTION;
+        FLUSH PRIVILEGES;
+EOF
+    
+    # Store database credentials securely
+    mkdir -p /etc/pterodactyl
+    chmod 700 /etc/pterodactyl
+    echo "DB_ROOT_PASS='$root_pass'" >> "$INSTALLER_CONF"
+    echo "DB_PASS='$db_pass'" >> "$INSTALLER_CONF"
+    chmod 600 "$INSTALLER_CONF"
+    
+    log_message "SUCCESS" "Database configured"
+}
+
+setup_ssl() {
+    log_message "INFO" "Setting up SSL with Let's Encrypt..."
+    
+    # Install certbot
+    if [[ "$OS_NAME" == "ubuntu" ]]; then
+        apt-get install -y certbot python3-certbot-nginx
+    elif [[ "$OS_NAME" == "debian" ]]; then
+        apt-get install -y certbot python3-certbot
+    fi
+    
+    # Obtain certificate
+    if certbot certonly --nginx --non-interactive --agree-tos --email "$PANEL_EMAIL" -d "$PANEL_DOMAIN" --redirect; then
+        log_message "SUCCESS" "SSL certificate obtained for $PANEL_DOMAIN"
+        echo "SSL_DOMAIN=$PANEL_DOMAIN" >> "$INSTALLER_CONF"
+    else
+        log_message "WARNING" "SSL certificate issuance failed. Proceeding with self-signed."
+        # Generate self-signed certificate as fallback
+        mkdir -p /etc/ssl/pterodactyl
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/ssl/pterodactyl/private.key \
+            -out /etc/ssl/pterodactyl/certificate.crt \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=$PANEL_DOMAIN"
+        echo "SSL_SELF_SIGNED=1" >> "$INSTALLER_CONF"
+    fi
+}
+
+# ==============================================
+# PANEL INSTALLATION
+# ==============================================
+
+install_panel_dependencies() {
+    log_message "INFO" "Installing panel dependencies..."
+    
+    # Update package lists with retry
+    for i in {1..3}; do
+        if apt-get update; then
+            break
+        fi
+        log_message "WARNING" "apt-get update attempt $i failed, retrying..."
+        sleep 2
+    done
+    
+    # Install basic tools
+    apt-get install -y \
+        curl tar unzip git ca-certificates \
+        lsb-release gnupg apt-transport-https \
+        software-properties-common
+    
+    # Install Node.js LTS
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+    apt-get install -y nodejs
+    
+    # Install Composer
+    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    
+    # Install Redis
+    apt-get install -y redis-server
+    
+    # Setup PHP
+    setup_php
+    
+    # Setup database
+    setup_database
+    
+    log_message "SUCCESS" "Panel dependencies installed"
+}
+
+install_panel() {
+    log_message "INFO" "Starting Pterodactyl Panel installation..."
+    
+    # Get domain if not set
+    if [[ -z "$PANEL_DOMAIN" ]]; then
+        while true; do
+            read -rp "Enter panel domain/FQDN (e.g., panel.example.com): " domain_input
+            if validate_domain "$domain_input"; then
+                break
+            fi
+        done
+    fi
+    
+    TOTAL_STEPS=15
+    CURRENT_STEP=0
+    
+    update_progress "Installing dependencies"
+    install_panel_dependencies
+    
+    update_progress "Creating panel directory"
+    mkdir -p "$PANEL_PATH"
+    chown -R "$PANEL_USER":"$PANEL_USER" "$PANEL_PATH"
+    
+    update_progress "Downloading panel files"
+    cd "$PANEL_PATH"
+    curl -Lo panel.tar.gz https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz
+    tar -xzvf panel.tar.gz
+    chmod -R 755 storage/* bootstrap/cache/
+    
+    update_progress "Installing PHP dependencies"
+    sudo -u "$PANEL_USER" composer install --no-dev --optimize-autoloader
+    
+    update_progress "Setting up environment"
+    cp .env.example .env
+    sudo -u "$PANEL_USER" php artisan key:generate --force
+    
+    # Update .env file with database credentials
+    local db_pass
+    db_pass=$(grep "DB_PASS=" "$INSTALLER_CONF" | cut -d= -f2 | tr -d "'")
+    
+    sed -i "s/APP_URL=.*/APP_URL=https:\/\/$PANEL_DOMAIN/" .env
+    sed -i "s/DB_DATABASE=.*/DB_DATABASE=$PANEL_DB_NAME/" .env
+    sed -i "s/DB_USERNAME=.*/DB_USERNAME=$PANEL_DB_USER/" .env
+    sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$db_pass/" .env
+    sed -i "s/APP_TIMEZONE=.*/APP_TIMEZONE=Asia\/Jakarta/" .env
+    
+    update_progress "Running database migrations"
+    sudo -u "$PANEL_USER" php artisan migrate --seed --force
+    
+    update_progress "Setting up queue worker"
+    cat > /etc/systemd/system/pteroq.service << EOF
+[Unit]
+Description=Pterodactyl Queue Worker
+After=redis-server.service
+
+[Service]
+User=$PANEL_USER
+Group=$PANEL_USER
+Restart=always
+ExecStart=/usr/bin/php $PANEL_PATH/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
+StartLimitInterval=180
+StartLimitBurst=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl enable --now pteroq.service
+    
+    update_progress "Building frontend assets"
+    sudo -u "$PANEL_USER" npm ci --only=production
+    sudo -u "$PANEL_USER" npm run build
+    
+    update_progress "Setting permissions"
+    chown -R "$PANEL_USER":www-data "$PANEL_PATH"
+    chmod -R 755 "$PANEL_PATH"
+    
+    update_progress "Configuring nginx"
+    apt-get install -y nginx
+    
+    cat > /etc/nginx/sites-available/pterodactyl.conf << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $PANEL_DOMAIN;
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name $PANEL_DOMAIN;
+    
+    root $PANEL_PATH/public;
+    index index.php;
+    
+    # SSL Configuration
+    ssl_certificate /etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem;
+    
+    # Self-signed fallback
+    ssl_certificate /etc/ssl/pterodactyl/certificate.crt;
+    ssl_certificate_key /etc/ssl/pterodactyl/private.key;
+    
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+    
+    location ~ \.php$ {
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        fastcgi_pass unix:/run/php/php$(php -r "echo PHP_MAJOR_VERSION.PHP_MINOR_VERSION;")-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size = 100M";
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_intercept_errors off;
+        fastcgi_buffer_size 16k;
+        fastcgi_buffers 4 16k;
+        fastcgi_connect_timeout 300;
+        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 300;
+    }
+    
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+    
+    ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/
+    nginx -t && systemctl reload nginx
+    
+    update_progress "Setting up SSL"
+    setup_ssl
+    
+    update_progress "Creating admin user"
+    # Check if user already exists
+    if ! sudo -u "$PANEL_USER" php artisan p:user:list | grep -q "$PANEL_EMAIL"; then
+        expect <<EOF
+spawn sudo -u $PANEL_USER php artisan p:user:make
+expect "Email address:*"
+send "$PANEL_EMAIL\r"
+expect "Username:*"
+send "$PANEL_USER\r"
+expect "First name:*"
+send "$PANEL_FIRSTNAME\r"
+expect "Last name:*"
+send "$PANEL_LASTNAME\r"
+expect "Password:*"
+send "$PANEL_PASSWORD\r"
+expect "Confirm password:*"
+send "$PANEL_PASSWORD\r"
+expect eof
+EOF
+    else
+        log_message "INFO" "Admin user already exists"
+    fi
+    
+    update_progress "Setting up firewall"
+    setup_firewall
+    
+    # Mark panel as installed
+    INSTALLED_COMPONENTS+=("panel")
+    echo "PANEL_INSTALLED=1" >> "$INSTALLER_CONF"
+    echo "PANEL_DOMAIN=$PANEL_DOMAIN" >> "$INSTALLER_CONF"
+    
+    log_message "SUCCESS" "Pterodactyl Panel installation completed!"
+    echo
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN} PANEL INSTALLATION COMPLETE${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "URL: ${BOLD}https://$PANEL_DOMAIN${NC}"
+    echo -e "Admin Username: ${BOLD}$PANEL_USER${NC}"
+    echo -e "Admin Password: ${BOLD}$PANEL_PASSWORD${NC}"
+    echo -e "Admin Email: ${BOLD}$PANEL_EMAIL${NC}"
+    echo -e "Log file: ${BOLD}$LOG_FILE${NC}"
+    echo -e "${GREEN}========================================${NC}"
+}
+
+# ==============================================
+# WINGS INSTALLATION
+# ==============================================
+
+install_docker() {
+    log_message "INFO" "Installing Docker..."
+    
+    # Remove old Docker versions
+    apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+    
+    # Install dependencies
+    apt-get install -y \
+        ca-certificates \
+        curl \
+        gnupg \
+        lsb-release
+    
+    # Add Docker GPG key
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/$OS_NAME/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    
+    # Add Docker repository
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$OS_NAME $OS_CODENAME stable" | \
+        tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Install Docker
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    
+    # Start and enable Docker
     systemctl enable --now docker
     
-    print_success "Docker terinstall!"
+    # Add panel user to docker group
+    usermod -aG docker "$PANEL_USER"
+    
+    echo "DOCKER_INSTALLED=1" >> "$INSTALLER_CONF"
+    log_message "SUCCESS" "Docker installed"
 }
 
-# Install Wings
 install_wings() {
-    print_step "Menginstall Wings..."
+    log_message "INFO" "Starting Wings installation..."
     
+    TOTAL_STEPS=8
+    CURRENT_STEP=0
+    
+    update_progress "Installing Docker"
+    install_docker
+    
+    update_progress "Downloading Wings binary"
     mkdir -p /etc/pterodactyl
-    cd /etc/pterodactyl
+    curl -L -o "$WINGS_BINARY" https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64
+    chmod +x "$WINGS_BINARY"
     
-    # Download wings
-    curl -L -o /usr/local/bin/wings https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_amd64
-    chmod u+x /usr/local/bin/wings
+    update_progress "Creating Wings configuration"
+    mkdir -p /etc/pterodactyl /var/lib/pterodactyl /var/log/pterodactyl
     
-    # Create configuration directory
-    mkdir -p /var/lib/pterodactyl /var/log/pterodactyl
-    
-    print_success "Wings terinstall!"
-}
-
-# Configure Wings
-configure_wings() {
-    print_step "Mengkonfigurasi Wings..."
-    
-    # Create wings configuration
     cat > /etc/pterodactyl/config.yml << EOF
 debug: false
-uuid: "$(cat /proc/sys/kernel/random/uuid)"
-token: "$PANEL_TOKEN"
+panel:
+  host: https://localhost
+  token: ""
+  trust: ""
+client:
+  trusted_proxies: []
+  remote: ""
+  token:
+    user: ""
+    server: ""
 api:
   host: 0.0.0.0
   port: 8080
   ssl:
     enabled: false
-    cert: /etc/letsencrypt/live/$FQDN/fullchain.pem
-    key: /etc/letsencrypt/live/$FQDN/privkey.pem
-  upload_limit: 100
+    certificate: ""
+    key: ""
 system:
   data: /var/lib/pterodactyl
-  sftp:
-    bind_port: 2022
-  username: $NODE_USERNAME
-  user:
-    uid: 998
-    gid: 998
-  detach_containers: false
-allowed_mounts: []
-remote: $PANEL_URL
-container:
-  docker:
-    network:
-      name: pterodactyl_nw
-      network_interface: ""
-    interfaces:
-      - name: eth0
-        type: internal
-    dns:
-      - 1.1.1.1
-      - 1.0.0.1
-    cpuset: []
-    runtime: ""
-  pid_limit: 512
-  memory_limit: $MEMORY_LIMIT
-  disk_limit: $DISK_LIMIT
-  cpu_limit: 100
-  threads: null
-  oom_disabled: false
-  privileged: false
-  allocate: true
-  image: "ghcr.io/pterodactyl/yolks:java_17"
-  mounts: []
-  log_configuration:
-    type: json-file
-    config:
-      max-size: "50m"
-      max-file: "3"
-  security_opt: []
-  extra_envs: []
-  network_mode: bridge
-  extra_hosts: []
-  port_bindings: []
-  labels: {}
+  log_directory: /var/log/pterodactyl
+  username: pterodactyl
+  timezone: Asia/Jakarta
+docker:
+  network:
+    name: pterodactyl_nw
+    interface: ""
+  size: 0
+  engine: ""
+  firewall:
+    enabled: false
 EOF
     
-    # Create systemd service
-    cat > /etc/systemd/system/wings.service << EOF
+    update_progress "Creating Wings service"
+    cat > "$WINGS_SERVICE" << EOF
 [Unit]
 Description=Pterodactyl Wings Daemon
 After=docker.service
@@ -275,206 +669,274 @@ User=root
 WorkingDirectory=/etc/pterodactyl
 LimitNOFILE=4096
 PIDFile=/var/run/wings/daemon.pid
-ExecStart=/usr/local/bin/wings
+ExecStart=$WINGS_BINARY
 Restart=on-failure
 StartLimitInterval=180
 StartLimitBurst=30
-RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
-    # Create pterodactyl user
-    if ! id -u pterodactyl >/dev/null 2>&1; then
-        useradd -r -d /var/lib/pterodactyl -s /bin/false pterodactyl
-        chown -R pterodactyl:pterodactyl /var/lib/pterodactyl
-        chown -R pterodactyl:pterodactyl /var/log/pterodactyl
-    fi
-    
-    # Set permissions
-    chmod 750 /etc/pterodactyl
-    chmod 640 /etc/pterodactyl/config.yml
-    
-    print_success "Konfigurasi Wings selesai!"
-}
-
-# Setup firewall
-setup_firewall() {
-    print_step "Mengatur firewall..."
-    
-    # Check if ufw is available
-    if command -v ufw &> /dev/null; then
-        ufw allow 22/tcp
-        ufw allow 80/tcp
-        ufw allow 443/tcp
-        ufw allow 8080/tcp
-        ufw allow 2022/tcp
-        ufw --force enable
-        print_success "UFW dikonfigurasi!"
-    elif command -v firewall-cmd &> /dev/null; then
-        firewall-cmd --permanent --add-port=22/tcp
-        firewall-cmd --permanent --add-port=80/tcp
-        firewall-cmd --permanent --add-port=443/tcp
-        firewall-cmd --permanent --add-port=8080/tcp
-        firewall-cmd --permanent --add-port=2022/tcp
-        firewall-cmd --reload
-        print_success "FirewallD dikonfigurasi!"
-    else
-        print_info "Firewall tidak terdeteksi, melewati..."
-    fi
-}
-
-# Start wings service
-start_wings() {
-    print_step "Menjalankan Wings service..."
-    
+    update_progress "Setting up systemd"
+    mkdir -p /var/run/wings
     systemctl daemon-reload
-    systemctl enable --now wings
+    systemctl enable wings
     
-    # Check if service is running
-    sleep 3
-    if systemctl is-active --quiet wings; then
-        print_success "Wings service berjalan!"
-    else
-        print_error "Wings service gagal berjalan!"
-        journalctl -u wings --no-pager -n 20
-        exit 1
+    update_progress "Opening firewall ports"
+    for port in "${WINGS_PORTS[@]}"; do
+        ufw allow "$port" comment "Pterodactyl Wings"
+    done
+    
+    echo "WINGS_PORTS=${WINGS_PORTS[*]}" >> "$INSTALLER_CONF"
+    
+    update_progress "Creating Wings user"
+    if ! id pterodactyl &>/dev/null; then
+        useradd --system --no-create-home --shell /sbin/nologin pterodactyl
     fi
-}
-
-# Generate SSL certificate (optional)
-generate_ssl() {
-    print_step "Membuat SSL certificate (self-signed)..."
     
-    # Create directory for SSL
-    mkdir -p /etc/letsencrypt/live/$FQDN
+    chown -R pterodactyl:pterodactyl /var/lib/pterodactyl /var/log/pterodactyl
     
-    # Generate self-signed certificate
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout /etc/letsencrypt/live/$FQDN/privkey.pem \
-        -out /etc/letsencrypt/live/$FQDN/fullchain.pem \
-        -subj "/C=ID/ST=Indonesia/L=Jakarta/O=Pterodactyl/CN=$FQDN" 2>/dev/null
+    # Mark wings as installed
+    INSTALLED_COMPONENTS+=("wings")
+    echo "WINGS_INSTALLED=1" >> "$INSTALLER_CONF"
     
-    print_success "SSL certificate dibuat!"
-}
-
-# Show installation summary
-show_summary() {
-    print_header
-    print_success "INSTALLASI SELESAI!"
-    echo ""
-    print_info "=== INFORMASI NODE ==="
-    echo "FQDN: $FQDN"
-    echo "Panel URL: $PANEL_URL"
-    echo "Node Name: $NODE_NAME"
-    echo "Wings Token: $PANEL_TOKEN"
-    echo "SFTP Port: 2022"
-    echo "Wings API Port: 8080"
-    echo ""
-    print_info "=== PERINTAH YANG BERGUNA ==="
-    echo "• Status Wings: systemctl status wings"
-    echo "• Restart Wings: systemctl restart wings"
-    echo "• Log Wings: journalctl -u wings -f"
-    echo "• Stop Wings: systemctl stop wings"
-    echo ""
-    print_info "=== UNTUK MENGHAPUS SEMUA KONFIGURASI ==="
-    echo "Jalankan: ./pterodactyl-auto-installer.sh --uninstall"
-    echo ""
-}
-
-# Uninstall everything
-uninstall_all() {
-    print_header
-    echo -e "${RED}"
-    echo "=============================================="
-    echo "     UNINSTALL PTERODACTYL WINGS"
-    echo "=============================================="
-    echo -e "${NC}"
+    update_progress "Installation complete"
     
-    read -p "Apakah Anda yakin ingin menghapus SEMUA konfigurasi Wings? (y/n): " -n 1 -r
+    log_message "SUCCESS" "Wings installation completed!"
     echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_error "Uninstall dibatalkan!"
-        exit 0
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN} WINGS INSTALLATION COMPLETE${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "Wings binary: ${BOLD}$WINGS_BINARY${NC}"
+    echo -e "Configuration: ${BOLD}/etc/pterodactyl/config.yml${NC}"
+    echo -e "Service: ${BOLD}systemctl status wings${NC}"
+    echo -e "Ports: ${BOLD}8080 (API), 2022 (SFTP)${NC}"
+    echo -e "${YELLOW}Note: You need to generate an API token from the panel${NC}"
+    echo -e "${YELLOW}and configure it in /etc/pterodactyl/config.yml${NC}"
+    echo -e "${GREEN}========================================${NC}"
+}
+
+# ==============================================
+# REMOVAL FUNCTIONS
+# ==============================================
+
+confirm_removal() {
+    echo -e "${RED}========================================${NC}"
+    echo -e "${RED}        WARNING: DESTRUCTIVE ACTION${NC}"
+    echo -e "${RED}========================================${NC}"
+    echo
+    echo -e "${YELLOW}This will remove ALL Pterodactyl components:${NC}"
+    echo "  • Pterodactyl Panel files and database"
+    echo "  • Wings service and configuration"
+    echo "  • Nginx configuration for panel"
+    echo "  • SSL certificates"
+    echo "  • Firewall rules"
+    echo "  • Docker (if installed by this script)"
+    echo
+    echo -e "${RED}This action is irreversible!${NC}"
+    echo
+    
+    read -rp "Type 'YES' to confirm removal: " confirmation
+    if [[ "$confirmation" != "YES" ]]; then
+        echo -e "${GREEN}Removal cancelled${NC}"
+        return 1
     fi
     
-    print_step "Menghentikan dan menonaktifkan Wings service..."
-    systemctl stop wings 2>/dev/null
-    systemctl disable wings 2>/dev/null
-    rm -f /etc/systemd/system/wings.service
+    # Double confirmation
+    echo
+    echo -e "${RED}Are you absolutely sure? This will delete all panel data!${NC}"
+    read -rp "Type 'CONFIRM' to proceed: " final_confirmation
+    if [[ "$final_confirmation" != "CONFIRM" ]]; then
+        echo -e "${GREEN}Removal cancelled${NC}"
+        return 1
+    fi
+    
+    return 0
+}
+
+remove_all() {
+    log_message "WARNING" "Starting complete removal of Pterodactyl"
+    
+    if ! confirm_removal; then
+        return
+    fi
+    
+    log_message "INFO" "Stopping services..."
+    
+    # Stop and disable services
+    systemctl stop wings pteroq 2>/dev/null || true
+    systemctl disable wings pteroq 2>/dev/null || true
+    
+    # Remove panel files
+    if [[ -d "$PANEL_PATH" ]]; then
+        log_message "INFO" "Removing panel files from $PANEL_PATH"
+        rm -rf "$PANEL_PATH"
+    fi
+    
+    # Remove nginx configuration
+    if [[ -f "/etc/nginx/sites-enabled/pterodactyl.conf" ]]; then
+        rm -f /etc/nginx/sites-enabled/pterodactyl.conf
+    fi
+    if [[ -f "/etc/nginx/sites-available/pterodactyl.conf" ]]; then
+        rm -f /etc/nginx/sites-available/pterodactyl.conf
+    fi
+    
+    # Remove SSL certificates
+    if [[ -n "$PANEL_DOMAIN" ]] && [[ -d "/etc/letsencrypt/live/$PANEL_DOMAIN" ]]; then
+        certbot delete --cert-name "$PANEL_DOMAIN" --non-interactive || true
+    fi
+    
+    # Remove self-signed certificates
+    if [[ -d "/etc/ssl/pterodactyl" ]]; then
+        rm -rf /etc/ssl/pterodactyl
+    fi
+    
+    # Remove wings
+    if [[ -f "$WINGS_BINARY" ]]; then
+        rm -f "$WINGS_BINARY"
+    fi
+    if [[ -f "$WINGS_SERVICE" ]]; then
+        rm -f "$WINGS_SERVICE"
+    fi
     systemctl daemon-reload
     
-    print_step "Menghapus Wings binary..."
-    rm -f /usr/local/bin/wings
+    # Remove data directories
+    rm -rf /var/lib/pterodactyl /var/log/pterodactyl /etc/pterodactyl
     
-    print_step "Menghapus semua file konfigurasi..."
-    rm -rf /etc/pterodactyl
-    rm -rf /var/lib/pterodactyl
-    rm -rf /var/log/pterodactyl
-    rm -rf /var/run/wings
-    
-    print_step "Menghapus user pterodactyl..."
-    if id -u pterodactyl >/dev/null 2>&1; then
-        userdel pterodactyl 2>/dev/null
+    # Remove firewall rules
+    if command -v ufw &>/dev/null; then
+        for port in "${PANEL_PORTS[@]}" "${WINGS_PORTS[@]}"; do
+            ufw delete allow "$port" 2>/dev/null || true
+        done
     fi
     
-    print_step "Menghapus SSL certificates..."
-    rm -rf /etc/letsencrypt/live/*$(hostname)* 2>/dev/null
-    rm -rf /etc/letsencrypt/live/*$FQDN* 2>/dev/null
+    # Remove Docker (only if we installed it)
+    if grep -q "DOCKER_INSTALLED=1" "$INSTALLER_CONF" 2>/dev/null; then
+        apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        rm -rf /var/lib/docker /etc/docker
+        groupdel docker 2>/dev/null || true
+    fi
     
-    # Optional: Uninstall docker (commented by default)
-    # print_step "Menghapus Docker..."
-    # if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-    #     apt-get purge -y docker-ce docker-ce-cli containerd.io
-    # elif [[ "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" ]]; then
-    #     yum remove -y docker-ce docker-ce-cli containerd.io
-    # fi
-    # rm -rf /var/lib/docker
+    # Remove database
+    if [[ -f "$INSTALLER_CONF" ]]; then
+        local root_pass
+        root_pass=$(grep "DB_ROOT_PASS=" "$INSTALLER_CONF" | cut -d= -f2 | tr -d "'")
+        mysql -u root -p"$root_pass" -e "DROP DATABASE IF EXISTS $PANEL_DB_NAME; DROP USER IF EXISTS '$PANEL_DB_USER'@'127.0.0.1'; DROP USER IF EXISTS '$PANEL_DB_USER'@'localhost';" 2>/dev/null || true
+    fi
     
-    print_success "Semua konfigurasi Wings telah dihapus!"
-    echo ""
-    print_info "Note: Docker masih terinstall. Jika ingin menghapus Docker juga, jalankan:"
-    echo "• Ubuntu/Debian: apt-get purge docker-ce docker-ce-cli containerd.io"
-    echo "• CentOS/Rocky: yum remove docker-ce docker-ce-cli containerd.io"
-    echo ""
+    # Remove installer configuration
+    rm -f "$INSTALLER_CONF"
+    
+    # Remove log file
+    rm -f "$LOG_FILE"
+    
+    log_message "SUCCESS" "Complete removal finished"
+    echo -e "${GREEN}All Pterodactyl components have been removed${NC}"
 }
 
-# Main installation function
-main_install() {
-    check_root
-    check_os
-    get_input
-    install_dependencies
-    install_docker
+# ==============================================
+# MAIN MENU & EXECUTION
+# ==============================================
+
+show_menu() {
+    clear
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}    Pterodactyl Installer v2.0.0${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BOLD}Detected OS: $OS_NAME $OS_VERSION${NC}"
+    echo -e "${BOLD}Server IP: ${SERVER_IP:-Not detected}${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo
+    echo -e "   ${GREEN}1.${NC} Install Panel Only"
+    echo -e "   ${GREEN}2.${NC} Install Wings Only"
+    echo -e "   ${GREEN}3.${NC} Install Panel + Wings"
+    echo -e "   ${RED}4.${NC} Remove ALL Configuration"
+    echo -e "   ${YELLOW}5.${NC} Exit"
+    echo
+    echo -e "${BLUE}========================================${NC}"
+}
+
+install_both() {
+    log_message "INFO" "Installing both Panel and Wings"
+    install_panel
     install_wings
-    generate_ssl
-    configure_wings
-    setup_firewall
-    start_wings
-    show_summary
 }
 
-# Main script logic
-case "$1" in
-    "--uninstall"|"-u")
-        uninstall_all
-        ;;
-    "--help"|"-h")
-        print_header
-        echo "Penggunaan:"
-        echo "  $0                    Install Wings Pterodactyl"
-        echo "  $0 --uninstall        Hapus semua konfigurasi Wings"
-        echo "  $0 --help             Tampilkan bantuan ini"
-        echo ""
-        echo "Fitur:"
-        echo "  • Install Wings otomatis"
-        echo "  • Konfigurasi otomatis dengan input FQDN saja"
-        echo "  • Email dan username dibuat otomatis"
-        echo "  • Generate SSL otomatis"
-        echo "  • Uninstall lengkap"
-        ;;
-    *)
-        main_install
-        ;;
-esac
+main() {
+    # Create log file
+    exec > >(tee -a "$LOG_FILE")
+    exec 2>&1
+    
+    log_message "INFO" "Starting Pterodactyl installer"
+    log_message "INFO" "Script started at $(date)"
+    
+    # Initial setup
+    require_root
+    detect_os
+    
+    # Try to get server IP
+    SERVER_IP=$(curl -s -4 --fail --max-time 5 ifconfig.me 2>/dev/null || curl -s -4 --fail --max-time 5 ipinfo.io/ip 2>/dev/null || echo "Not detected")
+    
+    # Load existing configuration if any
+    if [[ -f "$INSTALLER_CONF" ]]; then
+        log_message "INFO" "Found existing installation configuration"
+        # shellcheck source=/dev/null
+        source "$INSTALLER_CONF"
+        if [[ -n "$PANEL_DOMAIN" ]]; then
+            log_message "INFO" "Previous panel domain: $PANEL_DOMAIN"
+        fi
+    fi
+    
+    # Main menu loop
+    while true; do
+        show_menu
+        read -rp "Select option [1-5]: " choice
+        
+        case $choice in
+            1)
+                echo -e "\n${GREEN}Selected: Install Panel Only${NC}\n"
+                install_panel
+                ;;
+            2)
+                echo -e "\n${GREEN}Selected: Install Wings Only${NC}\n"
+                install_wings
+                ;;
+            3)
+                echo -e "\n${GREEN}Selected: Install Panel + Wings${NC}\n"
+                install_both
+                ;;
+            4)
+                echo -e "\n${RED}Selected: Remove ALL Configuration${NC}\n"
+                remove_all
+                ;;
+            5)
+                echo -e "\n${YELLOW}Exiting installer${NC}"
+                log_message "INFO" "Installer exited by user"
+                exit 0
+                ;;
+            *)
+                echo -e "\n${RED}Invalid option. Please select 1-5${NC}"
+                sleep 2
+                ;;
+        esac
+        
+        if [[ $choice =~ ^[1-3]$ ]]; then
+            echo
+            read -rp "Press Enter to return to main menu..."
+        fi
+    done
+}
+
+# ==============================================
+# SCRIPT EXECUTION
+# ==============================================
+
+# Check if running in terminal
+if [[ ! -t 0 ]]; then
+    echo "This script must be run in an interactive terminal"
+    exit 1
+fi
+
+# Run main function
+main
